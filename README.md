@@ -2,7 +2,7 @@
 
 # Saglitz Engine
 
-**The open-source generative media engine behind [Saglitz Photo Studio](https://github.com/HalidSaglam/SaglitzPhotoStudio).**
+**The open-source generative media engine behind Saglitz Photo Studio.**
 
 A self-contained, local-first inference server for image, persona, video, and audio generation on Apple Silicon. Runs entirely on your Mac, with optional bring-your-own-key cloud providers for the heavy jobs.
 
