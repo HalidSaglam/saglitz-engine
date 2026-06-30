@@ -2,7 +2,7 @@
 
 # Saglitz Engine
 
-**The open-source generative media engine behind Saglitz Photo Studio.**
+**The open-source generative media engine behind Saglitz Studio.**
 
 A self-contained, local-first inference server for image, persona, video, and audio generation on Apple Silicon. Runs entirely on your Mac, with optional bring-your-own-key cloud providers for the heavy jobs.
 
@@ -18,7 +18,7 @@ A self-contained, local-first inference server for image, persona, video, and au
 
 ## What this is
 
-Saglitz Engine is the local HTTP service that does the actual generative work for **Saglitz Photo Studio**, a native macOS app for photographers, marketers, and creators. The engine is fully open source under the GPL-3.0. The app that drives it is a separate, proprietary product.
+Saglitz Engine is the local HTTP service that does the actual generative work for **Saglitz Studio**, a native macOS app for photographers, marketers, and creators. The engine is fully open source under the GPL-3.0. The app that drives it is a separate, proprietary product.
 
 This repository is both:
 
@@ -32,7 +32,7 @@ Everything runs on `127.0.0.1`. No telemetry, no account, no data leaves your ma
 | Layer | License | Where |
 |-------|---------|-------|
 | **Engine** (this repo) | **GPL-3.0** | Open source, public |
-| **Saglitz Photo Studio** (the macOS app) | Proprietary | Sold separately |
+| **Saglitz Studio** (the macOS app) | Proprietary | Sold separately |
 
 The engine *must* be open: it loads GPL-licensed text-to-speech (`piper`, `phonemizer` via Kokoro) in-process and bundles GPL command-line tools (`draw-things-cli`, `ffmpeg`, `espeak-ng`). The macOS app talks to the engine **over local HTTP as a separate process**. That is aggregation, not linking, so the app is not a derivative work and remains proprietary. There is **no AGPL** anywhere in the stack.
 
@@ -69,7 +69,7 @@ The engine exposes a single FastAPI surface (~50 endpoints) covering four studio
 
 ```mermaid
 flowchart LR
-    App["Saglitz Photo Studio<br/>(macOS app, proprietary)"]
+    App["Saglitz Studio<br/>(macOS app, proprietary)"]
     Engine["Saglitz Engine<br/>FastAPI · 127.0.0.1:8765"]
     MLX["MLX worker thread<br/>Kokoro · F5 · Whisper · rembg"]
     CLI["GPL CLI tools<br/>draw-things-cli · ffmpeg · espeak-ng"]
@@ -134,10 +134,10 @@ Complete license texts ship inside every release bundle. If you redistribute a b
 
 ## Screenshots
 
-Screenshots of Saglitz Photo Studio, the app this engine powers, are coming soon.
+Screenshots of Saglitz Studio, the app this engine powers, are coming soon.
 
 ---
 
 <div align="center">
-<sub>Saglitz Engine is free software under the GPL-3.0. The Saglitz Photo Studio app is a separate proprietary product.</sub>
+<sub>Saglitz Engine is free software under the GPL-3.0. The Saglitz Studio app is a separate proprietary product.</sub>
 </div>

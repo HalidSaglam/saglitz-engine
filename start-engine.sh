@@ -1,5 +1,5 @@
 #!/bin/bash
-# Saglitz Photo Studio — başlatır: yerel görsel motoru (FastAPI + mflux).
+# Saglitz Studio — başlatır: yerel görsel motoru (FastAPI + mflux).
 # Varsayılan model (SAGLITZ_BASE_MODEL, vars. "schnell") açılışta yüklenir;
 # diğerleri (ör. "z-image-turbo") ilk istekte yüklenir. http://127.0.0.1:8765
 #   ./start-engine.sh

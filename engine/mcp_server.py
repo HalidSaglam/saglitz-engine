@@ -1,4 +1,4 @@
-"""Saglitz Photo Studio — MCP server (lets Claude Code generate images).
+"""Saglitz Studio — MCP server (lets Claude Code generate images).
 
 Thin client over stdio that forwards to the running Saglitz engine
 (`engine/server.py`, default http://127.0.0.1:8765), which holds the FLUX model
@@ -29,7 +29,7 @@ mcp = FastMCP("saglitz-photo-studio")
 def _hint(exc: Exception) -> str:
     return (
         f"Saglitz motoruna ulaşılamadı ({ENGINE_URL}): {exc}. "
-        "Önce motoru başlat (Saglitz Photo Studio app'i aç ya da engine/server.py'yi çalıştır)."
+        "Önce motoru başlat (Saglitz Studio app'i aç ya da engine/server.py'yi çalıştır)."
     )
 
 

@@ -1,4 +1,4 @@
-"""Saglitz Photo Studio — local image-generation engine (mflux / Apple MLX).
+"""Saglitz Studio — local image-generation engine (mflux / Apple MLX).
 
 A small FastAPI server that loads one or more image models (FLUX.1 and
 Z-Image-Turbo) into memory and exposes them over HTTP so both the native
@@ -663,7 +663,7 @@ def _safe_loras(loras: Optional[list[dict]], reg: dict) -> Optional[list[dict]]:
 
 
 # --- app -----------------------------------------------------------------
-app = FastAPI(title="Saglitz Photo Studio Engine")
+app = FastAPI(title="Saglitz Studio Engine")
 
 
 @app.on_event("startup")
