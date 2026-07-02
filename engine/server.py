@@ -985,6 +985,8 @@ def _dt_download_worker(ckpt: str) -> None:
                     buf += ch
                     parts = re.split(r"[\r\n]", buf)
                     buf = parts.pop()
+                    if len(buf) > 4096:          # no separator yet — don't let the tail (and the re-scan) grow unbounded
+                        buf = buf[-256:]
                     for seg in parts:
                         m = _DT_PROG_RE.search(seg)
                         if not m:
@@ -1001,13 +1003,22 @@ def _dt_download_worker(ckpt: str) -> None:
                 pass
 
         threading.Thread(target=_read, daemon=True).start()
+        # Stall detection uses DISK GROWTH (reliable), not "a progress line arrived"
+        # — the CLI keeps redrawing its bar at the same byte count when stuck, which
+        # would otherwise look like progress and never trigger a retry.
+        last_size, stalls = start_size, 0
         while proc.poll() is None:
-            time.sleep(3)
+            time.sleep(10)
             if _dt_want_cancel(ckpt):
                 proc.kill()
                 _dt_finish_cancel(ckpt, partial, pmap)
                 return
-            if time.time() - prog["t"] > 90:         # no progress for 90s -> stalled
+            sz = _dt_partial_mb(ckpt) or 0
+            if sz > last_size:
+                last_size, stalls = sz, 0
+            else:
+                stalls += 1
+            if stalls >= 9:                          # ~90s with no disk growth -> stalled
                 last_err = "Download stalled; retrying."
                 proc.kill()
                 break
@@ -1045,6 +1056,11 @@ def dt_models(refresh: bool = False) -> list[dict]:
         with _dt_dl_lock:
             dl = dict(_dt_downloads.get(ckpt, {}))
         meta = _CURATED_META.get(ckpt)
+        # Only stat the .partial for a model that's actually downloading — statting
+        # all ~335 models every poll is pointless filesystem churn.
+        sz = dl.get("done_mb")
+        if sz is None and dl.get("status") == "downloading":
+            sz = _dt_partial_mb(ckpt)
         out.append({
             "ckpt": ckpt,
             "label": meta["label"] if meta else m["name"],
@@ -1054,9 +1070,8 @@ def dt_models(refresh: bool = False) -> list[dict]:
             "downloaded": _dt_downloaded(ckpt),
             "status": dl.get("status"),          # downloading | done | error | None
             "error": dl.get("error"),
-            # Live values parsed from the CLI progress (exact size + %), falling back
-            # to the .partial size before the first progress line arrives.
-            "size_mb": dl.get("done_mb", _dt_partial_mb(ckpt)),
+            # Live values parsed from the CLI progress (exact size + %).
+            "size_mb": sz,
             "total_mb": dl.get("total_mb"),
             "pct": dl.get("pct"),
             "file": dl.get("file"),
