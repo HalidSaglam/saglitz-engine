@@ -90,6 +90,32 @@ def _load_output_root() -> None:
 
 _load_output_root()
 
+# User-chosen models root (where multi-GB weights live). Lets a user put models
+# on an external SSD when the laptop is low on space. All model reads/writes use
+# the DT_MODELS_DIR / DT_LORAS_DIR globals, so reassigning them relocates live.
+_MODELS_CFG = ROOT / ".models_root"
+
+
+def _apply_models_root(root: Path) -> None:
+    global DT_MODELS_DIR, DT_LORAS_DIR
+    DT_MODELS_DIR = root / "dt-models"
+    DT_LORAS_DIR = root / "dt-loras"
+    DT_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    DT_LORAS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_models_root() -> None:
+    try:
+        if _MODELS_CFG.exists():
+            p = Path(_MODELS_CFG.read_text().strip())
+            if str(p):
+                _apply_models_root(p)
+    except Exception:
+        pass
+
+
+_load_models_root()
+
 # Draw Things LoRA `version` strings by base-model family (needed in config-json
 # for custom LoRAs not registered in custom_lora.json). "flux1" is the only one
 # the CLI docs confirm; the rest are best-effort and may need adjusting.
@@ -192,18 +218,26 @@ MODEL_SPECS: dict[str, dict[str, Any]] = {
 # Models are referenced by their .ckpt id everywhere; generation uses it once
 # downloaded.
 DT_CATALOG: list[dict[str, Any]] = [
+    # `mb` is the approximate main-weight size, used only for a download % readout.
     {"ckpt": "flux_2_klein_4b_q6p.ckpt", "label": "FLUX.2 Klein 4B", "family": "FLUX.2",
-     "default_steps": 4, "negative": True, "use_guidance": True},
+     "default_steps": 4, "negative": True, "use_guidance": True, "mb": 2973},
     {"ckpt": "z_image_turbo_1.0_q6p.ckpt", "label": "Z-Image Turbo (DT)", "family": "Z-Image",
-     "default_steps": 9, "negative": True, "use_guidance": False},
+     "default_steps": 9, "negative": True, "use_guidance": False, "mb": 5000},
     {"ckpt": "qwen_image_2512_q6p.ckpt", "label": "Qwen Image 2512", "family": "Qwen",
-     "default_steps": 30, "negative": True, "use_guidance": True},
+     "default_steps": 30, "negative": True, "use_guidance": True, "mb": 15000},
     {"ckpt": "flux_1_schnell_q8p.ckpt", "label": "FLUX.1 schnell (DT)", "family": "FLUX.1",
-     "default_steps": 4, "negative": False, "use_guidance": False},
+     "default_steps": 4, "negative": False, "use_guidance": False, "mb": 12000},
     {"ckpt": "sd_xl_base_1.0_q6p_q8p.ckpt", "label": "SDXL Base 1.0", "family": "SDXL",
-     "default_steps": 30, "negative": True, "use_guidance": True},
+     "default_steps": 30, "negative": True, "use_guidance": True, "mb": 6800},
     {"ckpt": "flux_1_canny_dev_q5p.ckpt", "label": "FLUX.1 Canny · ControlNet", "family": "FLUX.1",
-     "default_steps": 20, "negative": False, "use_guidance": True, "control": "canny"},
+     "default_steps": 20, "negative": False, "use_guidance": True, "control": "canny", "mb": 8936},
+    # Instruction-edit models ("make the eyes blue", replace objects…). Qwen-Edit is
+    # Apache-2.0 (commercial OK); Kontext is FLUX *dev* = NON-COMMERCIAL (the app
+    # flags it + asks to confirm before download).
+    {"ckpt": "qwen_image_edit_2511_q6p.ckpt", "label": "Qwen Image Edit 2511", "family": "Qwen",
+     "default_steps": 20, "negative": True, "use_guidance": True, "mb": 15000},
+    {"ckpt": "flux_1_kontext_dev_q5p.ckpt", "label": "FLUX.1 Kontext dev", "family": "FLUX.1",
+     "default_steps": 20, "negative": False, "use_guidance": True, "mb": 8500},
 ]
 _DT_BY_CKPT = {m["ckpt"]: m for m in DT_CATALOG}
 
@@ -771,6 +805,31 @@ def set_output(ref: OutputRef) -> dict:
     return {"path": str(PROJECTS)}
 
 
+class ModelsRootRef(BaseModel):
+    path: str
+
+
+@app.get("/api/config/models-dir")
+def get_models_dir() -> dict:
+    return {"path": str(DT_MODELS_DIR.parent), "models": str(DT_MODELS_DIR)}
+
+
+@app.post("/api/config/models-dir")
+def set_models_dir(ref: ModelsRootRef) -> dict:
+    """Relocate the models root (e.g. to an external SSD). New downloads land
+    there; models already downloaded to the old location stay put."""
+    p = Path(os.path.realpath(ref.path))
+    if not _is_allowed_path(str(p)):
+        raise HTTPException(status_code=400,
+                            detail="Models folder must be in your home folder or an external drive.")
+    try:
+        _apply_models_root(p)
+        _MODELS_CFG.write_text(str(p))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Folder unavailable: {exc}")
+    return {"path": str(p), "models": str(DT_MODELS_DIR)}
+
+
 # --- BYOK cloud keys (fal.ai video + ElevenLabs TTS) -----------------------------
 _BYOK_CFG = ROOT / ".byok.json"
 
@@ -966,6 +1025,7 @@ def dt_models(refresh: bool = False) -> list[dict]:
             "status": dl.get("status"),          # downloading | done | error | None
             "error": dl.get("error"),
             "size_mb": _dt_partial_mb(ckpt),
+            "total_mb": (meta or {}).get("mb"),   # approx, for a % readout (curated only)
         })
     return out
 
