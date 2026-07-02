@@ -2297,7 +2297,11 @@ def delete_generation(ref: DeleteRef) -> dict:
                 _atomic_write_json(mf, rows)
             except json.JSONDecodeError:
                 pass
-        hist = [e for e in _read_history() if e.get("file") != fname]
+        # Scope the global-history removal to THIS project+file so a same-named
+        # image in another project isn't dropped (filenames are timestamp+uuid, but
+        # be precise). Legacy rows without a project are left untouched.
+        hist = [e for e in _read_history()
+                if not (e.get("file") == fname and e.get("project") == project)]
         _atomic_write_json(HISTORY_FILE, hist)
     return {"status": "deleted"}
 
