@@ -35,6 +35,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+# Reject decompression-bomb images (~7k×7k) so a crafted huge file can't exhaust
+# RAM and kill the single engine worker (PIL raises DecompressionBombError > 2×).
+Image.MAX_IMAGE_PIXELS = 50_000_000
 
 from mflux.models.common.config.model_config import ModelConfig
 from mflux.models.flux.variants.txt2img.flux import Flux1
@@ -609,14 +612,30 @@ def _round16(v: int) -> int:
 _ALLOWED_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 
 
+_ALLOWED_PATH_ROOTS = [os.path.realpath(os.path.expanduser("~")), "/Volumes"]
+
+
+def _is_allowed_path(p: str) -> bool:
+    """Confine a user-supplied filesystem path to the home folder or an external
+    volume. The local API has no auth, so this blocks a malicious/injected caller
+    from reading system files or another user's data via these path endpoints."""
+    try:
+        rp = os.path.realpath(p)
+    except Exception:
+        return False
+    return any(rp == r or rp.startswith(r + os.sep) for r in _ALLOWED_PATH_ROOTS)
+
+
 def _safe_image_path(p: str) -> str:
-    """Validate an img2img init path: must be an existing image file (guards
-    against path-traversal / arbitrary file reads via the local API)."""
+    """Validate an img2img init path: must be an existing image file inside an
+    allowed root (guards path-traversal / arbitrary file reads via the local API)."""
     real = os.path.realpath(p)
     if not os.path.isfile(real):
         raise HTTPException(status_code=400, detail="image_path: file not found")
     if os.path.splitext(real)[1].lower() not in _ALLOWED_IMG_EXT:
         raise HTTPException(status_code=400, detail="image_path: unsupported image type")
+    if not _is_allowed_path(real):
+        raise HTTPException(status_code=400, detail="image_path: outside your home / external drives")
     return real
 
 
@@ -727,6 +746,9 @@ def get_output() -> dict:
 def set_output(ref: OutputRef) -> dict:
     global PROJECTS
     p = Path(os.path.realpath(ref.path))
+    if not _is_allowed_path(str(p)):
+        raise HTTPException(status_code=400,
+                            detail="Output folder must be in your home folder or an external drive.")
     try:
         p.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
@@ -881,8 +903,6 @@ def _dt_download_worker(ckpt: str) -> None:
         time.sleep(2)
     with _dt_dl_lock:
         _dt_downloads[ckpt] = {"status": "error", "error": last_err or "Download failed."}
-    with _dt_dl_lock:
-        _dt_downloads[ckpt] = {"status": "error", "error": last_err or "Download failed."}
 
 
 _CURATED_META = {m["ckpt"]: m for m in DT_CATALOG}
@@ -984,6 +1004,8 @@ def dt_import(ref: ImportRef) -> dict:
     src = os.path.realpath(ref.path)
     if not os.path.isfile(src):
         raise HTTPException(status_code=400, detail="File not found.")
+    if not _is_allowed_path(src):
+        raise HTTPException(status_code=400, detail="File must be in your home folder or an external drive.")
     if os.path.splitext(src)[1].lower() not in _IMPORT_EXT:
         raise HTTPException(status_code=400, detail="Unsupported format (.safetensors/.ckpt/…).")
     # Slugify the model name before it reaches `draw-things-cli --name --replace`
@@ -1074,6 +1096,8 @@ def dt_lora_import(ref: LoRAImportRef) -> dict:
     src = os.path.realpath(ref.path)
     if not os.path.isfile(src):
         raise HTTPException(status_code=400, detail="File not found.")
+    if not _is_allowed_path(src):
+        raise HTTPException(status_code=400, detail="File must be in your home folder or an external drive.")
     if os.path.splitext(src)[1].lower() not in _ALLOWED_LORA_EXT:
         raise HTTPException(status_code=400, detail="Only .ckpt / .safetensors.")
     dest = DT_LORAS_DIR / os.path.basename(src)
@@ -1150,6 +1174,8 @@ def dt_train_start(req: TrainRequest) -> dict:
     ds = os.path.realpath(req.dataset)
     if not os.path.isdir(ds):
         raise HTTPException(status_code=400, detail="Dataset folder not found.")
+    if not _is_allowed_path(ds):
+        raise HTTPException(status_code=400, detail="Dataset must be in your home folder or an external drive.")
     imgs = [f for f in os.listdir(ds)
             if os.path.splitext(f)[1].lower() in _ALLOWED_IMG_EXT]
     if not imgs:
@@ -2656,6 +2682,10 @@ def _civitai_download_worker(url: str, filename: str, kind: str, token: str, bas
                                        produced_ckpt=produced, base=base_hint or None,
                                        log=(proc.stdout or "")[-200:])
     except Exception as exc:
+        try:                          # drop the orphaned .part so failures don't pile up GBs
+            tmp.unlink(missing_ok=True)
+        except (NameError, OSError):
+            pass
         with _civitai_lock:
             _civitai_dl.update(status="error", log=str(exc))
 
