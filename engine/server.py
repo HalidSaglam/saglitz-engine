@@ -962,7 +962,8 @@ def _dt_download_worker(ckpt: str) -> None:
         if _dt_want_cancel(ckpt):
             _dt_finish_cancel(ckpt, partial, pmap)
             return
-        start_size = _dt_partial_mb(ckpt) or 0
+        with _dt_dl_lock:                       # actual downloaded MB (not the pre-allocated file size)
+            start_done = _dt_downloads.get(ckpt, {}).get("done_mb", 0)
         try:
             proc = subprocess.Popen(
                 [_DT_CLI, "models", "ensure", "--models-dir", str(DT_MODELS_DIR), "--model", ckpt],
@@ -973,7 +974,7 @@ def _dt_download_worker(ckpt: str) -> None:
             with _dt_dl_lock:
                 _dt_downloads[ckpt] = {"status": "error", "error": str(exc)}
             return
-        prog = {"t": time.time()}        # last time a progress line was parsed
+        prog = {"t": time.time(), "sig": None}   # sig = last (file, downloaded-MB)
 
         def _read(p=proc):
             buf = ""
@@ -991,34 +992,32 @@ def _dt_download_worker(ckpt: str) -> None:
                         m = _DT_PROG_RE.search(seg)
                         if not m:
                             continue
-                        prog["t"] = time.time()
+                        done = round(_num_mb(m.group(4), m.group(5)))
+                        sig = (m.group(1), m.group(2), done)   # file index + downloaded MB
+                        if sig != prog["sig"]:       # REAL progress (bytes grew or a new file) —
+                            prog["sig"] = sig        # not just the bar redrawing at the same count
+                            prog["t"] = time.time()
                         with _dt_dl_lock:
                             if ckpt not in _dt_dl_cancel:
                                 _dt_downloads[ckpt] = {
                                     "status": "downloading", "pct": int(m.group(3)),
-                                    "done_mb": round(_num_mb(m.group(4), m.group(5))),
+                                    "done_mb": done,
                                     "total_mb": round(_num_mb(m.group(6), m.group(7))),
                                     "file": f"{m.group(1)}/{m.group(2)}"}
             except Exception:
                 pass
 
         threading.Thread(target=_read, daemon=True).start()
-        # Stall detection uses DISK GROWTH (reliable), not "a progress line arrived"
-        # — the CLI keeps redrawing its bar at the same byte count when stuck, which
-        # would otherwise look like progress and never trigger a retry.
-        last_size, stalls = start_size, 0
+        # Stall = the CLI's parsed downloaded-MB hasn't grown for 90s. (NOT the .partial
+        # file size — the CLI PRE-ALLOCATES it at full size, so st_size never grows and
+        # a disk check would false-stall every 90s, killing + resuming = dead slow.)
         while proc.poll() is None:
-            time.sleep(10)
+            time.sleep(5)
             if _dt_want_cancel(ckpt):
                 proc.kill()
                 _dt_finish_cancel(ckpt, partial, pmap)
                 return
-            sz = _dt_partial_mb(ckpt) or 0
-            if sz > last_size:
-                last_size, stalls = sz, 0
-            else:
-                stalls += 1
-            if stalls >= 9:                          # ~90s with no disk growth -> stalled
+            if time.time() - prog["t"] > 90:
                 last_err = "Download stalled; retrying."
                 proc.kill()
                 break
@@ -1030,9 +1029,12 @@ def _dt_download_worker(ckpt: str) -> None:
             with _dt_dl_lock:
                 _dt_downloads[ckpt] = {"status": "done"}
             return
-        # No real progress -> the .partial is corrupt; wipe it and restart clean.
-        end_size = _dt_partial_mb(ckpt) or 0
-        if end_size <= start_size + 1 and attempt < 9:
+        # No real progress this attempt -> the .partial is corrupt; wipe it and start
+        # clean. (Compare DOWNLOADED MB, not the pre-allocated file size which never
+        # grows — else every retry would wipe a perfectly good resumable partial.)
+        with _dt_dl_lock:
+            end_done = _dt_downloads.get(ckpt, {}).get("done_mb", 0)
+        if end_done <= start_done + 1 and attempt < 9:
             for p in (partial, pmap):
                 try:
                     p.unlink()
