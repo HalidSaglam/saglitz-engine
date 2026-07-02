@@ -932,11 +932,29 @@ def _dt_partial_mb(ckpt: str) -> Optional[int]:
     return None
 
 
+# draw-things-cli prints live progress like "[1/4] name [bar] 12% 2,1 GB/17,63 GB"
+# (European decimals). Parse it for the REAL total + percent — no size guessing.
+_DT_PROG_RE = re.compile(
+    r"\[(\d+)/(\d+)\].*?(\d+)%\s+([\d.,]+)\s*([KMGTP]?B)\s*/\s*([\d.,]+)\s*([KMGTP]?B)")
+_UNIT_MB = {"B": 1 / 1048576, "KB": 1 / 1024, "MB": 1.0, "GB": 1024.0, "TB": 1048576.0}
+
+
+def _num_mb(num: str, unit: str) -> float:
+    s = num.strip()
+    if "," in s and "." in s:        # European thousands+decimal: 1.234,56
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", ".")      # 17,63 -> 17.63
+    try:
+        return float(s) * _UNIT_MB.get(unit.upper(), 0.0)
+    except ValueError:
+        return 0.0
+
+
 def _dt_download_worker(ckpt: str) -> None:
-    """Download with stall recovery. `models ensure` resumes from the .partial on
-    disk; when it hangs (a known Draw Things issue) we kill it and re-run. CRITICAL:
-    if a resume makes NO progress, the .partial is corrupt and resuming will hang
-    forever on it — so we wipe the .partial and start fresh. Up to 10 attempts."""
+    """Download with stall recovery, parsing the CLI's live progress for the real
+    size/percent. `models ensure` resumes from the .partial; if a resume makes no
+    progress the .partial is corrupt, so we wipe it and restart. Up to 10 attempts."""
     last_err = ""
     partial = DT_MODELS_DIR / (ckpt + ".partial")
     pmap = DT_MODELS_DIR / (ckpt + ".partial.map")
@@ -948,43 +966,60 @@ def _dt_download_worker(ckpt: str) -> None:
         try:
             proc = subprocess.Popen(
                 [_DT_CLI, "models", "ensure", "--models-dir", str(DT_MODELS_DIR), "--model", ckpt],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             with _dt_dl_lock:
                 _dt_dl_procs[ckpt] = proc
         except Exception as exc:
             with _dt_dl_lock:
                 _dt_downloads[ckpt] = {"status": "error", "error": str(exc)}
             return
-        last_size, stalls = start_size, 0
+        prog = {"t": time.time()}        # last time a progress line was parsed
+
+        def _read(p=proc):
+            buf = ""
+            try:
+                while True:
+                    ch = p.stdout.read(80)
+                    if not ch:
+                        break
+                    buf += ch
+                    parts = re.split(r"[\r\n]", buf)
+                    buf = parts.pop()
+                    for seg in parts:
+                        m = _DT_PROG_RE.search(seg)
+                        if not m:
+                            continue
+                        prog["t"] = time.time()
+                        with _dt_dl_lock:
+                            if ckpt not in _dt_dl_cancel:
+                                _dt_downloads[ckpt] = {
+                                    "status": "downloading", "pct": int(m.group(3)),
+                                    "done_mb": round(_num_mb(m.group(4), m.group(5))),
+                                    "total_mb": round(_num_mb(m.group(6), m.group(7))),
+                                    "file": f"{m.group(1)}/{m.group(2)}"}
+            except Exception:
+                pass
+
+        threading.Thread(target=_read, daemon=True).start()
         while proc.poll() is None:
-            time.sleep(10)
+            time.sleep(3)
             if _dt_want_cancel(ckpt):
                 proc.kill()
                 _dt_finish_cancel(ckpt, partial, pmap)
                 return
-            sz = _dt_partial_mb(ckpt) or 0
-            if sz > last_size:
-                last_size, stalls = sz, 0
-            else:
-                stalls += 1
-            if stalls >= 9:                        # ~90s with no growth -> stalled
+            if time.time() - prog["t"] > 90:         # no progress for 90s -> stalled
                 last_err = "Download stalled; retrying."
                 proc.kill()
                 break
         try:
-            err_out = proc.stderr.read().decode(errors="ignore") if proc.stderr else ""
-        except Exception:
-            err_out = ""
-        try:
             proc.kill()
         except Exception:
             pass
-        if _dt_downloaded(ckpt):                    # finished (even if rc was odd)
+        if _dt_downloaded(ckpt):                      # finished
             with _dt_dl_lock:
                 _dt_downloads[ckpt] = {"status": "done"}
             return
-        # Resume made no real progress → the .partial is corrupt. Wipe it so the
-        # next attempt downloads from byte 0 (this is what fixes the dead-stall).
+        # No real progress -> the .partial is corrupt; wipe it and restart clean.
         end_size = _dt_partial_mb(ckpt) or 0
         if end_size <= start_size + 1 and attempt < 9:
             for p in (partial, pmap):
@@ -993,11 +1028,6 @@ def _dt_download_worker(ckpt: str) -> None:
                 except OSError:
                     pass
             last_err = "Corrupt partial cleared; downloading from scratch."
-        elif err_out.strip():
-            last_err = err_out[-300:]
-        with _dt_dl_lock:                            # keep UI in "downloading" while we retry
-            _dt_downloads[ckpt] = {"status": "downloading",
-                                   "error": f"resuming ({attempt + 1}/10)…"}
         time.sleep(2)
     with _dt_dl_lock:
         _dt_downloads[ckpt] = {"status": "error", "error": last_err or "Download failed."}
@@ -1024,8 +1054,12 @@ def dt_models(refresh: bool = False) -> list[dict]:
             "downloaded": _dt_downloaded(ckpt),
             "status": dl.get("status"),          # downloading | done | error | None
             "error": dl.get("error"),
-            "size_mb": _dt_partial_mb(ckpt),
-            "total_mb": (meta or {}).get("mb"),   # approx, for a % readout (curated only)
+            # Live values parsed from the CLI progress (exact size + %), falling back
+            # to the .partial size before the first progress line arrives.
+            "size_mb": dl.get("done_mb", _dt_partial_mb(ckpt)),
+            "total_mb": dl.get("total_mb"),
+            "pct": dl.get("pct"),
+            "file": dl.get("file"),
         })
     return out
 
