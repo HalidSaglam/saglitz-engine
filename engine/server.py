@@ -1827,10 +1827,25 @@ def _vdur(path) -> float:
         return 0.0
 
 
+def _has_audio(pth) -> bool:
+    """True if the file has at least one audio stream (AI clips often have none)."""
+    fp = shutil.which("ffprobe")
+    if not fp:
+        return False
+    try:
+        r = _run([fp, "-v", "error", "-select_streams", "a", "-show_entries",
+                  "stream=index", "-of", "csv=p=0", str(pth)], capture_output=True, text=True)
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
+
+
 @app.post("/api/video/sequence")
 def render_sequence(req: SequenceRequest) -> dict:
     """Render an ordered, trimmed sequence to one social-format mp4, optionally
-    with crossfade transitions and a background music track."""
+    with crossfade transitions and a background music track. Each clip keeps its
+    own audio (silence for clips that have none); the music track is mixed under
+    it as a ducked bed."""
     proj = _safe_project(req.project)
     d = _project_dir(proj)
     clips = [(d / os.path.basename(c.file), c.start, c.end) for c in req.clips]
@@ -1871,7 +1886,6 @@ def render_sequence(req: SequenceRequest) -> dict:
         out_label = "vout"
 
     audio_in: list[str] = []
-    music_map: list[str] = []
     # Confine the music track to the project tree (the app copies a picked track in,
     # like /api/audio/musicbed) so a request can't mux an arbitrary local file into
     # the output. Invalid/out-of-tree → silently no music (don't read it).
@@ -1882,8 +1896,7 @@ def render_sequence(req: SequenceRequest) -> dict:
         except HTTPException:
             mpath = None
     if mpath:
-        audio_in = ["-i", mpath]
-        music_map = ["-map", f"{n}:a", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+        audio_in = ["-i", mpath]          # music becomes input index n
 
     # --- Phase D: burn title layers + a brand logo watermark on the final video ---
     overlay_in: list[str] = []
@@ -1924,7 +1937,35 @@ def render_sequence(req: SequenceRequest) -> dict:
         cur = "wm"
     out_label = cur
 
-    map_args = ["-map", f"[{out_label}]"] + music_map
+    # --- Audio: each clip keeps its own audio (silence where a clip has none),
+    # joined to match the video (concat, or acrossfade under a crossfade transition),
+    # with the optional music track mixed in as a ducked, looped bed. ---
+    a_segs: list[str] = []
+    for i, (p, s, e) in enumerate(clips):
+        if _has_audio(p):
+            atrim = f"atrim=start={max(0.0, s)}" + (f":end={e}" if e and e > s else "")
+            a_segs.append(f"[{i}:a]{atrim},asetpts=PTS-STARTPTS,aresample=48000[a{i}]")
+        else:
+            a_segs.append(
+                f"anullsrc=r=48000:cl=stereo,atrim=duration={durs[i]:.3f},asetpts=PTS-STARTPTS[a{i}]")
+    fc += ";" + ";".join(a_segs)
+    if T > 0:
+        acur = "a0"
+        for i in range(1, n):
+            albl = f"ax{i}"
+            fc += f";[{acur}][a{i}]acrossfade=d={T}[{albl}]"
+            acur = albl
+        a_out = acur
+    else:
+        fc += ";" + "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aout]"
+        a_out = "aout"
+    if mpath:
+        fc += (f";[{n}:a]volume=0.35,aloop=loop=-1:size=2000000000[mbed]"
+               f";[{a_out}][mbed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amix]")
+        a_out = "amix"
+
+    map_args = ["-map", f"[{out_label}]", "-map", f"[{a_out}]",
+                "-c:a", "aac", "-b:a", "192k"]
 
     out_name = f"timeline_{uuid.uuid4().hex[:6]}_{req.aspect.replace(':', 'x')}.mp4"
     out = d / out_name
@@ -3386,6 +3427,96 @@ def image_removebg(req: RemoveBGRequest) -> dict:
             "width": out_img.width, "height": out_img.height}
 
 
+# === Built-in model weights download (mflux / HF, progress-tracked) =============
+# The bundle ships code but no weights; this lets a fresh user pull a starter
+# model from the app with progress, instead of an opaque inline first-load fetch.
+_MODEL_REPOS: dict[str, tuple[str, str, int]] = {
+    # model id -> (HF repo, human label, approx GB). Z-Image Turbo is the starter:
+    # small, Apache-2.0 (commercial-safe), fast, self-contained mflux 4-bit weights.
+    "z-image-turbo": ("filipstrand/Z-Image-Turbo-mflux-4bit", "Z-Image Turbo", 6),
+}
+_model_downloads: dict[str, dict] = {}      # model -> {status, mb, error}
+_model_dl_lock = threading.Lock()
+
+
+def _hf_repo_cache_mb(repo: str) -> int:
+    try:
+        from huggingface_hub import constants as _hc
+        d = Path(_hc.HF_HUB_CACHE) / ("models--" + repo.replace("/", "--"))
+    except Exception:
+        return 0
+    total = 0
+    if d.exists():
+        for p in d.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+    return round(total / 1e6)
+
+
+def _model_download_worker(model: str, repo: str) -> None:
+    with _model_dl_lock:
+        _model_downloads[model] = {"status": "downloading", "mb": _hf_repo_cache_mb(repo)}
+    stop = {"v": False}
+
+    def _watch():
+        while not stop["v"]:
+            with _model_dl_lock:
+                if _model_downloads.get(model, {}).get("status") == "downloading":
+                    _model_downloads[model]["mb"] = _hf_repo_cache_mb(repo)
+            time.sleep(3)
+
+    try:
+        # Force online even if the launcher pinned HF_HUB_OFFLINE=1 (older bundles).
+        import huggingface_hub.constants as _hc
+        _hc.HF_HUB_OFFLINE = False
+        os.environ["HF_HUB_OFFLINE"] = "0"
+        from huggingface_hub import snapshot_download
+        threading.Thread(target=_watch, daemon=True).start()
+        snapshot_download(repo)
+        stop["v"] = True
+        with _model_dl_lock:
+            _model_downloads[model] = {"status": "done", "mb": _hf_repo_cache_mb(repo)}
+    except Exception as exc:
+        stop["v"] = True
+        with _model_dl_lock:
+            _model_downloads[model] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+
+class ModelDownloadReq(BaseModel):
+    model: str
+
+
+@app.get("/api/model/catalog")
+def model_catalog() -> dict:
+    """Downloadable built-in models + whether their weights are already present."""
+    out = []
+    for mid, (repo, label, gb) in _MODEL_REPOS.items():
+        out.append({"id": mid, "label": label, "gb": gb,
+                    "downloaded": _hf_repo_cache_mb(repo) > gb * 500})   # > ~half expected
+    return {"models": out}
+
+
+@app.post("/api/model/download")
+def model_download(req: ModelDownloadReq) -> dict:
+    entry = _MODEL_REPOS.get(req.model)
+    if not entry:
+        raise HTTPException(status_code=400, detail=f"No downloadable weights registered for '{req.model}'.")
+    with _model_dl_lock:
+        if _model_downloads.get(req.model, {}).get("status") == "downloading":
+            return {"status": "downloading"}
+    threading.Thread(target=_model_download_worker, args=(req.model, entry[0]), daemon=True).start()
+    return {"status": "started"}
+
+
+@app.get("/api/model/download/status")
+def model_download_status(model: str) -> dict:
+    with _model_dl_lock:
+        return dict(_model_downloads.get(model, {"status": "idle"}))
+
+
 # === Logo Creator: styled lettermarks (reuses the image + rembg pipeline) ========
 # Prompt templates per style. {t} = the letter/word, {c} = accent-colour word.
 LOGO_STYLES: dict[str, dict] = {
@@ -3453,9 +3584,12 @@ _LOGO_NEG = ("extra letters, words, paragraph, caption, watermark, signature, bl
 
 class LogoRequest(BaseModel):
     text: str
+    kind: str = "lettermark"         # lettermark | symbol | wordmark
     style: str = "crystal"
     color: str = "violet"
     font: Optional[str] = None       # OFL font id; wordmark render / img2img structure
+    reference: Optional[str] = None  # example logo (path/file) to base the result on (img2img)
+    reference_strength: float = 0.6  # 0..1 — higher keeps more of the reference
     model: Optional[str] = None
     seed: Optional[int] = None
     count: int = 1
@@ -3584,36 +3718,47 @@ def logo_generate(req: LogoRequest) -> dict:
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Enter a letter or short word.")
-    if len(text) > 24:
-        raise HTTPException(status_code=400, detail="Keep the logo text short (24 characters max).")
+    limit = 120 if req.kind == "symbol" else 24   # symbol takes a description, not a short label
+    if len(text) > limit:
+        raise HTTPException(status_code=400, detail=f"Keep it under {limit} characters.")
     color = (req.color or "violet").strip() or "violet"
     proj = _safe_project(req.project or "Logos")
     n = max(1, min(6, req.count))
 
     # Pure wordmark — exact text in the chosen OFL font, no model (commercial-clean).
-    if req.style == "wordmark":
+    if req.kind == "wordmark":
         if not req.font:
             raise HTTPException(status_code=400, detail="Pick a font for the wordmark.")
         res = _render_wordmark(text, req.font, color, req.width, req.height, req.transparent, proj)
-        return {"style": "wordmark", "font": req.font, "results": [res]}
+        return {"kind": "wordmark", "font": req.font, "results": [res]}
 
     style = LOGO_STYLES.get(req.style)
     if not style:
         raise HTTPException(status_code=400, detail=f"Unknown style '{req.style}'.")
-    prompt = style["p"].format(t=text, c=color)
+    if req.kind == "symbol":
+        # reuse the chosen material, applied to a described symbol/icon instead of a letter
+        material = re.sub(r"^.*?'\{t\}',\s*", "", style["p"]).format(c=color)
+        prompt = "a minimalist logo symbol / icon of " + text + ", " + material
+    else:
+        prompt = style["p"].format(t=text, c=color)
 
-    # Font-guided styling: render the exact letterform, then restyle it via img2img so
-    # the output keeps that font. Uses the commercial base model — NO ControlNet (the
-    # only catalog ControlNet is FLUX Canny, which is non-commercial).
-    init_path = _render_letterform_init(text, req.font, req.width, req.height, proj) if req.font else None
+    # img2img structure: a reference logo (base the result on it) takes priority,
+    # else the exact font letterform. Uses the commercial base model — NO ControlNet
+    # (the only catalog ControlNet is FLUX Canny, which is non-commercial).
+    init_path, init_strength = None, None
+    if req.reference:
+        init_path = _safe_image_path(req.reference)
+        init_strength = max(0.2, min(0.9, req.reference_strength))
+    elif req.font:
+        init_path = _render_letterform_init(text, req.font, req.width, req.height, proj)
+        init_strength = 0.72
 
     results = []
     for i in range(n):
         seed = (req.seed + i) if req.seed is not None else int.from_bytes(uuid.uuid4().bytes[:4], "big")
         gr = GenerateRequest(prompt=prompt, negative_prompt=_LOGO_NEG, model=req.model,
                              width=req.width, height=req.height, seed=seed, project=proj,
-                             image_path=init_path,
-                             image_strength=(0.72 if init_path else None))
+                             image_path=init_path, image_strength=init_strength)
         res = generate(gr)                       # reuses the gen lock + model dispatch
         if req.transparent:
             res = _logo_cutout(proj, res["file"]) or res
