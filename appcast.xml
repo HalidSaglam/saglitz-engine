@@ -7,7 +7,7 @@
       <sparkle:version>12</sparkle:version>
       <sparkle:shortVersionString>1.11</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio.dmg" sparkle:edSignature="yqh4G0YNDNv2WJdSPS1S1BKIewKiLh0x7597CAyOzV4XjscCGuXZA/+VL092mtyWIJFyUm6z7i8ODg6Xw/DdDw==" length="7331452" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-12.dmg" sparkle:edSignature="yqh4G0YNDNv2WJdSPS1S1BKIewKiLh0x7597CAyOzV4XjscCGuXZA/+VL092mtyWIJFyUm6z7i8ODg6Xw/DdDw==" length="7331452" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
