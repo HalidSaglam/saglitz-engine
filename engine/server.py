@@ -663,6 +663,8 @@ class GenerateRequest(BaseModel):
     image_strength: Optional[float] = None  # img2img strength 0..1
     loras: Optional[list[dict]] = None      # DT only: [{"file": name, "weight": w}]
     scheduler: Optional[str] = None         # mflux only: linear | flow_match_euler_discrete
+    dt_sampler: Optional[int] = None        # DT only: sampler enum (10 = Euler A Trailing,
+                                            # required by Hyper/Lightning step-distilled LoRAs)
 
 
 def _round16(v: int) -> int:
@@ -1492,6 +1494,8 @@ def generate(req: GenerateRequest) -> dict:
         kwargs: dict[str, Any] = {}
         if is_dt:
             kwargs["loras"] = _safe_loras(req.loras, dt_reg)
+            if req.dt_sampler is not None:
+                kwargs["sampler"] = max(0, min(20, int(req.dt_sampler)))
         else:
             kwargs["loras"] = req.loras        # mflux: applied for FLUX schnell/dev
             kwargs["scheduler"] = _safe_scheduler(req.scheduler)  # mflux only
@@ -1613,7 +1617,8 @@ def _dt_run(out_path: str, reg: dict, prompt: str, width: int, height: int,
             negative_prompt: Optional[str] = None,
             image_path: Optional[str] = None,
             image_strength: Optional[float] = None,
-            loras: Optional[list[dict]] = None) -> None:
+            loras: Optional[list[dict]] = None,
+            sampler: Optional[int] = None) -> None:
     """Build + run one draw-things-cli generate to `out_path`. Raises on failure."""
     cmd = [
         _DT_CLI, "generate",
@@ -1635,8 +1640,13 @@ def _dt_run(out_path: str, reg: dict, prompt: str, width: int, height: int,
         # the image directly; only plain img2img uses a denoising strength.
         if not (reg.get("control") or _is_edit_ckpt(reg["ckpt"])):
             cmd += ["--strength", str(image_strength if image_strength is not None else 0.6)]
+    cfg: dict[str, Any] = {}
     if loras:                                        # LoRA via JSON override
-        cmd += ["--config-json", json.dumps({"loras": loras})]
+        cfg["loras"] = loras
+    if sampler is not None:                          # step-distilled LoRAs need trailing samplers
+        cfg["sampler"] = sampler
+    if cfg:
+        cmd += ["--config-json", json.dumps(cfg)]
 
     # Popen (not run) so a generation can be cancelled by killing the process.
     proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
@@ -1669,6 +1679,52 @@ _current_dt_proc: Optional[subprocess.Popen] = None
 _proc_lock = threading.Lock()
 
 
+# --- Fast/Turbo: step-distillation accelerator LoRAs (Knowledge Distillation) ---
+# Hyper-SD (ByteDance 2024) / SDXL-Lightning (ByteDance 2024) as plain LoRAs on
+# ANY SDXL checkpoint: 30 steps → 8/4. Commercial-safe (OpenRAIL++ for SDXL).
+# Downloaded ONLY via the explicit ensure endpoint (the app asks the user first).
+_FAST_LORAS = {
+    "fast":  {"repo": "ByteDance/Hyper-SD", "file": "Hyper-SDXL-8steps-CFG-lora.safetensors",
+              "size_mb": 787, "steps": 8, "cfg": 5.0, "weight": 0.75},
+    "turbo": {"repo": "ByteDance/SDXL-Lightning", "file": "sdxl_lightning_4step_lora.safetensors",
+              "size_mb": 394, "steps": 4, "cfg": 1.0, "weight": 1.0},
+}
+
+
+@app.get("/api/fast/status")
+def fast_status() -> dict:
+    return {k: {"installed": (DT_LORAS_DIR / v["file"]).is_file(), "size_mb": v["size_mb"],
+                "file": v["file"], "steps": v["steps"], "cfg": v["cfg"], "weight": v["weight"]}
+            for k, v in _FAST_LORAS.items()}
+
+
+class FastRef(BaseModel):
+    tier: str = "fast"
+
+
+@app.post("/api/fast/ensure")
+def fast_ensure(ref: FastRef) -> dict:
+    spec = _FAST_LORAS.get(ref.tier)
+    if not spec:
+        raise HTTPException(status_code=400, detail="Unknown accelerator tier.")
+    dest = DT_LORAS_DIR / spec["file"]
+    if not dest.is_file():
+        try:
+            from huggingface_hub import hf_hub_download
+            hf_hub_download(repo_id=spec["repo"], filename=spec["file"],
+                            local_dir=str(DT_LORAS_DIR))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Accelerator download failed: {exc}")
+        _lora_meta_path(dest.name).write_text(json.dumps(_base_from_hint("SDXL 1.0")))
+        link = DT_MODELS_DIR / dest.name          # DT resolves LoRAs relative to models-dir
+        if not link.exists():
+            try:
+                os.symlink(str(dest), str(link))
+            except Exception:
+                shutil.copy2(str(dest), str(link))
+    return {"file": dest.name, "installed": True}
+
+
 @app.post("/api/cancel")
 def cancel_generation() -> dict:
     """Cancel the running generation: kills the Draw Things subprocess AND flags
@@ -1691,7 +1747,8 @@ def _dt_generate(name: str, project: str, prompt: str, width: int, height: int,
                  negative_prompt: Optional[str],
                  image_path: Optional[str] = None,
                  image_strength: Optional[float] = None,
-                 loras: Optional[list[dict]] = None) -> dict:
+                 loras: Optional[list[dict]] = None,
+                 sampler: Optional[int] = None) -> dict:
     """Generate via the Draw Things CLI subprocess. Writes the PNG straight into
     projects/<project>/ and records both manifests, like the mflux path."""
     reg = _dt_resolve(name)
@@ -1702,7 +1759,7 @@ def _dt_generate(name: str, project: str, prompt: str, width: int, height: int,
 
     t0 = time.time()
     _dt_run(str(out_path), reg, prompt, width, height, steps, guidance, seed,
-            negative_prompt, image_path, image_strength, loras)
+            negative_prompt, image_path, image_strength, loras, sampler)
     elapsed = time.time() - t0
 
     entry = {
