@@ -2658,17 +2658,72 @@ class UpscaleRef(BaseModel):
     scale: int = 2
 
 
+# --- Real-ESRGAN: true super-resolution (BSD-3, Metal GPU via ncnn/Vulkan). ---
+# Fetched on first use (SHA-256 pinned, like every other runtime download) into a
+# SIBLING of engine/ so bundle updates never wipe it. Falls back to Lanczos.
+_RESR_URL = ("https://github.com/xinntao/Real-ESRGAN/releases/download/"
+             "v0.2.5.0/realesrgan-ncnn-vulkan-20220424-macos.zip")
+_RESR_SHA256 = "e0ad05580abfeb25f8d8fb55aaf7bedf552c375b5b4d9bd3c8d59764d2cc333a"
+_RESR_DIR = ROOT / "tools-realesrgan"
+_RESR_LOCK = threading.Lock()
+
+
+def _ensure_realesrgan() -> Optional[str]:
+    exe = _RESR_DIR / "realesrgan-ncnn-vulkan"
+    if exe.is_file() and os.access(exe, os.X_OK):
+        return str(exe)
+    with _RESR_LOCK:
+        if exe.is_file() and os.access(exe, os.X_OK):
+            return str(exe)
+        try:
+            import io
+            import zipfile
+            req = urllib.request.Request(_RESR_URL, headers={"User-Agent": "saglitz-engine"})
+            data = urllib.request.urlopen(req, timeout=180).read()
+            if hashlib.sha256(data).hexdigest() != _RESR_SHA256:
+                return None                       # refuse an unverified binary
+            _RESR_DIR.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                for n in z.namelist():
+                    base = os.path.basename(n)
+                    if not base or ".." in n:
+                        continue
+                    if base == "realesrgan-ncnn-vulkan" or n.startswith("models/"):
+                        target = _RESR_DIR / ("models" / Path(base) if n.startswith("models/") else Path(base))
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(z.read(n))
+            os.chmod(exe, 0o755)
+            return str(exe) if exe.is_file() else None
+        except Exception:
+            return None
+
+
 @app.post("/api/upscale")
 def upscale_image(ref: UpscaleRef) -> dict:
-    """Enlarge an existing image (Lanczos) and save it as a new generation."""
+    """Enlarge an existing image — Real-ESRGAN super-resolution when available
+    (adds real detail, ~3-5s on Apple GPU), plain Lanczos as the fallback."""
     project = _safe_project(ref.project)
     src = PROJECTS / project / os.path.basename(ref.file)
     if not src.is_file():
         raise HTTPException(status_code=400, detail="Image not found.")
     s = max(2, min(4, int(ref.scale)))
-    img = Image.open(str(src)).convert("RGB")
-    up = img.resize((img.width * s, img.height * s), Image.LANCZOS)
     gen_id = uuid.uuid4().hex[:12]
+    up = None
+    if (exe := _ensure_realesrgan()) is not None:
+        try:
+            tmp_out = _project_dir(project) / f".resr_{gen_id}.png"
+            proc = _run([exe, "-i", str(src), "-o", str(tmp_out),
+                         "-n", "realesrgan-x4plus", "-s", str(s),
+                         "-m", str(_RESR_DIR / "models")],
+                        capture_output=True, timeout=600)
+            if proc.returncode == 0 and tmp_out.is_file():
+                up = Image.open(str(tmp_out)).convert("RGB")
+            tmp_out.unlink(missing_ok=True)
+        except Exception:
+            up = None
+    if up is None:                                # binary unavailable → old path
+        img = Image.open(str(src)).convert("RGB")
+        up = img.resize((img.width * s, img.height * s), Image.LANCZOS)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     fname = f"{stamp}_upscale{s}x_{gen_id[:6]}.png"
     up.save(str(_project_dir(project) / fname))
