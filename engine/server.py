@@ -2668,6 +2668,26 @@ _RESR_DIR = ROOT / "tools-realesrgan"
 _RESR_LOCK = threading.Lock()
 
 
+def _realesrgan_exe() -> Optional[str]:
+    """Installed tool path or None — NEVER downloads (the app asks the user first)."""
+    exe = _RESR_DIR / "realesrgan-ncnn-vulkan"
+    return str(exe) if exe.is_file() and os.access(exe, os.X_OK) else None
+
+
+@app.get("/api/upscale/tool")
+def upscale_tool_status() -> dict:
+    return {"installed": _realesrgan_exe() is not None, "size_mb": 50}
+
+
+@app.post("/api/upscale/tool/install")
+def upscale_tool_install() -> dict:
+    """User consented in the app — fetch + SHA-verify the upscaler now."""
+    if _ensure_realesrgan() is None:
+        raise HTTPException(status_code=502,
+                            detail="Couldn't download the upscaler — check your connection and try again.")
+    return {"installed": True}
+
+
 def _ensure_realesrgan() -> Optional[str]:
     exe = _RESR_DIR / "realesrgan-ncnn-vulkan"
     if exe.is_file() and os.access(exe, os.X_OK):
@@ -2709,7 +2729,7 @@ def upscale_image(ref: UpscaleRef) -> dict:
     s = max(2, min(4, int(ref.scale)))
     gen_id = uuid.uuid4().hex[:12]
     up = None
-    if (exe := _ensure_realesrgan()) is not None:
+    if (exe := _realesrgan_exe()) is not None:
         try:
             tmp_out = _project_dir(project) / f".resr_{gen_id}.png"
             # x4plus only supports its NATIVE 4x — asking the binary for -s 2
