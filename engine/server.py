@@ -748,6 +748,11 @@ def _safe_loras(loras: Optional[list[dict]], reg: dict) -> Optional[list[dict]]:
 # --- app -----------------------------------------------------------------
 app = FastAPI(title="Saglitz Photo Studio Engine")
 
+# Never write request lines to the access log: query strings can carry a
+# caller-supplied Civitai token, and the log lands in a world-readable file.
+import logging as _logging
+_logging.getLogger("uvicorn.access").disabled = True
+
 # The API is deliberately unauthenticated (a local sidecar for the desktop app),
 # which makes loopback the entire security boundary. Enforce it in-process so an
 # accidental SAGLITZ_HOST=0.0.0.0 doesn't expose file-path config, downloads and

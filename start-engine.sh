@@ -1,5 +1,5 @@
 #!/bin/bash
-# Saglitz Studio — başlatır: yerel görsel motoru (FastAPI + mflux).
+# Saglitz Photo Studio — başlatır: yerel görsel motoru (FastAPI + mflux).
 # Varsayılan model (SAGLITZ_BASE_MODEL, vars. "schnell") açılışta yüklenir;
 # diğerleri (ör. "z-image-turbo") ilk istekte yüklenir. http://127.0.0.1:8765
 #   ./start-engine.sh
@@ -17,10 +17,12 @@ if [ ! -x engine-venv/bin/python ]; then
   echo "✗ engine-venv yok."; exit 1
 fi
 
-# Yerel ağırlıkları kullan, ağ bekleme/sürpriz indirme olmasın.
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+# Allow HuggingFace model downloads: downloading + running models IS the app's
+# core function (same as its Draw Things / Civitai downloads). Set =1 on a dev
+# box whose weights are already local to avoid per-load etag checks.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 # 8-bit: float16 ile aynı kalite, ~yarı RAM. "4" = hızlı taslak, "" = float16.
 export SAGLITZ_QUANTIZE="${SAGLITZ_QUANTIZE:-8}"
 
 echo "▶ Saglitz motoru → http://$HOST:$PORT  (durdurmak için Ctrl+C)"
-exec ./engine-venv/bin/python -m uvicorn server:app --app-dir engine --host "$HOST" --port "$PORT"
+exec ./engine-venv/bin/python -m uvicorn server:app --app-dir engine --host "$HOST" --port "$PORT" --no-access-log

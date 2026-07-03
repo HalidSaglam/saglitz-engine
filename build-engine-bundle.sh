@@ -37,12 +37,28 @@ SRC_SP="$ROOT/engine-venv/lib/python3.11/site-packages"
 [ -d "$SRC_SP" ] || { echo "✗ engine-venv site-packages not found"; exit 1; }
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$SRC_SP/" "$PYDIR/lib/python3.11/site-packages/"
 
+# MLX ships a per-macOS metallib: pip on a newer host (e.g. macOS 26 / Metal 4.0)
+# vendors a wheel that FAILS on older macOS ("language version 4.0 not supported").
+# Force the macosx_15 (Metal 3.2) build so the bundle runs on macOS 15..26.
+echo "▶ Stage 2b: pin MLX to the macosx_15 build (runs on macOS 15..26)…"
+"$PYDIR/bin/python3.11" -m pip download --quiet --no-deps --only-binary=:all: \
+  --platform macosx_15_0_arm64 --python-version 3.11 -d "$WORK/_mlx15" \
+  mlx==0.31.2 mlx-metal==0.31.2 \
+  && "$PYDIR/bin/python3.11" -m pip install --quiet --no-deps --force-reinstall \
+     --target "$PYDIR/lib/python3.11/site-packages" "$WORK"/_mlx15/*.whl \
+  && echo "  ✓ MLX pinned to macosx_15" \
+  || echo "  ⚠ could not pin macosx_15 MLX — verify manually"
+
 # server.py sits at the engine-dir root so its ROOT (= __file__/../..) is the
 # stable App Support dir — user data (dt-models/projects) is a SIBLING of the
 # bundle, never inside it, so a bundle update can't clobber it.
 echo "▶ Stage 3: engine source…"
 cp "$ROOT"/engine/*.py "$ENG/"
 [ -d "$ROOT/engine/fonts" ] && cp -R "$ROOT/engine/fonts" "$ENG/fonts"   # OFL fonts for wordmarks
+# Stamp the engine-code version this bundle already carries, so a fresh install
+# doesn't pointlessly re-download the code overlay on its next launch.
+CODE_VER="$(sed -n 's/.*engineCodeVersion = \([0-9]*\).*/\1/p' "$ROOT/macapp/Sources/EngineInstaller.swift")"
+[ -n "$CODE_VER" ] && printf '%s' "$CODE_VER" > "$ENG/.code-version"
 
 echo "▶ Stage 4: vendor the GPL CLI tools + relocate their dylibs…"
 mkdir -p "$ENG/bin" "$ENG/libs" "$ENG/tools"
@@ -90,10 +106,12 @@ set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"    # …/engine
 export PATH="$HERE/bin:$PATH"                            # bundled draw-things-cli, ffmpeg, espeak-ng
 export ESPEAK_DATA_PATH="$HERE/tools/espeak-ng-data"
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+# Allow HuggingFace model downloads — downloading + running models IS the app's
+# core function (consistent with its Draw Things / Civitai downloads).
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 export SAGLITZ_QUANTIZE="${SAGLITZ_QUANTIZE:-8}"
 PORT="${SAGLITZ_PORT:-8765}"; HOST="${SAGLITZ_HOST:-127.0.0.1}"
-exec "$HERE/python/bin/python3.11" -m uvicorn server:app --app-dir "$HERE" --host "$HOST" --port "$PORT"
+exec "$HERE/python/bin/python3.11" -m uvicorn server:app --app-dir "$HERE" --host "$HOST" --port "$PORT" --no-access-log
 EOS
 chmod +x "$ENG/start-engine.sh"
 
