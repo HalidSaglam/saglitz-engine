@@ -500,6 +500,23 @@ def _mlx(fn: Callable, *args, **kwargs):
     return _engine.submit(fn, *args, **kwargs).result()
 
 
+# In-process mflux cancellation: an in-loop callback runs after EVERY denoising
+# step; raising StopImageGenerationException there aborts the run cleanly (the
+# same exception mflux's own battery saver uses). NOTE: mflux's "interrupt"
+# callbacks fire only on KeyboardInterrupt — in_loop is the per-step hook.
+_mflux_cancel = threading.Event()
+
+
+class _CancelInterrupt:
+    def call_in_loop(self, t, seed, prompt, latents, config, time_steps) -> None:
+        if _mflux_cancel.is_set():
+            from mflux.utils.exceptions import StopImageGenerationException
+            raise StopImageGenerationException("Cancelled by user")
+
+
+_CANCEL_INTERRUPT = _CancelInterrupt()
+
+
 def _ensure_model(name: str) -> Any:
     """Load `name` if not already cached. MUST run on the MLX engine thread.
     Keeps only _MAX_RESIDENT_MODELS resident, LRU-evicting the rest so memory
@@ -516,6 +533,8 @@ def _ensure_model(name: str) -> Any:
     spec = MODEL_SPECS[name]
     t0 = time.time()
     model = spec["build"](name)
+    if hasattr(model, "callbacks"):               # enable /api/cancel for mflux models
+        model.callbacks.register(_CANCEL_INTERRUPT)
     _models[name] = model
     _load_errors.pop(name, None)
     print(f"✓ '{name}' loaded ({time.time() - t0:.0f}s)")
@@ -1543,7 +1562,13 @@ def _do_generate(name: str, project: str, prompt: str, width: int, height: int,
         kwargs["image_strength"] = image_strength if image_strength is not None else 0.6
 
     t0 = time.time()
-    image = model.generate_image(**kwargs)
+    _mflux_cancel.clear()                          # a fresh run must not inherit a stale cancel
+    try:
+        image = model.generate_image(**kwargs)
+    except Exception as exc:
+        if type(exc).__name__ == "StopImageGenerationException":
+            raise HTTPException(status_code=499, detail="Generation cancelled.")
+        raise
     elapsed = time.time() - t0
     gen_id = uuid.uuid4().hex[:12]
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1641,7 +1666,9 @@ _proc_lock = threading.Lock()
 
 @app.post("/api/cancel")
 def cancel_generation() -> dict:
-    """Cancel the running Draw Things generation by killing its subprocess."""
+    """Cancel the running generation: kills the Draw Things subprocess AND flags
+    the in-process mflux interrupt (aborts FLUX/Z-Image at the next step)."""
+    _mflux_cancel.set()
     with _proc_lock:
         p = _current_dt_proc
     if p is not None and p.poll() is None:
@@ -1651,7 +1678,7 @@ def cancel_generation() -> dict:
         except Exception:
             p.kill()
         return {"status": "cancelled"}
-    return {"status": "idle"}
+    return {"status": "cancelling"}
 
 
 def _dt_generate(name: str, project: str, prompt: str, width: int, height: int,
@@ -1767,7 +1794,13 @@ def _do_inpaint(name: str, project: str, prompt: str,
                 kwargs["guidance"] = guidance
             if spec["negative"] and negative_prompt:
                 kwargs["negative_prompt"] = negative_prompt
-            mdl.generate_image(**kwargs).save(path=cout)
+            _mflux_cancel.clear()
+            try:
+                mdl.generate_image(**kwargs).save(path=cout)
+            except Exception as exc:
+                if type(exc).__name__ == "StopImageGenerationException":
+                    raise HTTPException(status_code=499, detail="Generation cancelled.")
+                raise
         region = Image.open(cout).convert("RGB").resize((w, h))
     elapsed = time.time() - t0
 
