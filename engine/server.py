@@ -2712,12 +2712,17 @@ def upscale_image(ref: UpscaleRef) -> dict:
     if (exe := _ensure_realesrgan()) is not None:
         try:
             tmp_out = _project_dir(project) / f".resr_{gen_id}.png"
+            # x4plus only supports its NATIVE 4x — asking the binary for -s 2
+            # produces corrupted, tile-shifted output. Always run 4x, then
+            # Lanczos-downscale to the requested size (keeps the added detail).
             proc = _run([exe, "-i", str(src), "-o", str(tmp_out),
-                         "-n", "realesrgan-x4plus", "-s", str(s),
+                         "-n", "realesrgan-x4plus", "-s", "4",
                          "-m", str(_RESR_DIR / "models")],
                         capture_output=True, timeout=600)
             if proc.returncode == 0 and tmp_out.is_file():
                 up = Image.open(str(tmp_out)).convert("RGB")
+                if s != 4:
+                    up = up.resize((up.width * s // 4, up.height * s // 4), Image.LANCZOS)
             tmp_out.unlink(missing_ok=True)
         except Exception:
             up = None
