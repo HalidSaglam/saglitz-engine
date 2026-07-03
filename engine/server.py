@@ -13,6 +13,7 @@ other registered model is loaded lazily on first use and then cached.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -31,7 +32,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -727,6 +728,25 @@ def _safe_loras(loras: Optional[list[dict]], reg: dict) -> Optional[list[dict]]:
 
 # --- app -----------------------------------------------------------------
 app = FastAPI(title="Saglitz Photo Studio Engine")
+
+# The API is deliberately unauthenticated (a local sidecar for the desktop app),
+# which makes loopback the entire security boundary. Enforce it in-process so an
+# accidental SAGLITZ_HOST=0.0.0.0 doesn't expose file-path config, downloads and
+# subprocess-spawning generation to the LAN. Owners who really want remote
+# clients must opt in explicitly with SAGLITZ_ALLOW_REMOTE=1.
+_ALLOW_REMOTE = os.environ.get("SAGLITZ_ALLOW_REMOTE", "") == "1"
+_LOOPBACK_CLIENTS = ("127.0.0.1", "::1", "testclient", "")
+
+
+@app.middleware("http")
+async def _loopback_guard(request, call_next):
+    client = request.client.host if request.client else ""
+    if not _ALLOW_REMOTE and client not in _LOOPBACK_CLIENTS:
+        return JSONResponse(status_code=403, content={
+            "detail": "Remote access is disabled — this engine only accepts "
+                      "loopback connections (set SAGLITZ_ALLOW_REMOTE=1 to allow "
+                      "trusted LAN clients)."})
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -2780,6 +2800,9 @@ def civitai_search(query: str = "", type: str = "Checkpoint",
             "precision": meta.get("size"),   # full / pruned
             "download_url": x.get("downloadUrl"),
             "primary": bool(x.get("primary")),
+            # Civitai publishes per-file hashes; pass SHA-256 through so the
+            # download endpoint can verify the bytes it stores.
+            "sha256": ((x.get("hashes") or {}).get("SHA256") or "").lower() or None,
         }
 
     out = []
@@ -2817,6 +2840,7 @@ def civitai_search(query: str = "", type: str = "Checkpoint",
             "base": versions[0]["base"],
             "size_mb": f.get("size_mb") or 0,
             "download_url": f.get("download_url"),
+            "sha256": f.get("sha256"),
             "filename": f.get("name") or f"{m.get('name','model')}.safetensors",
             "thumb": (imgs[0].get("url") if imgs else None),
             "nsfw": m.get("nsfw", False) or False,
@@ -2832,6 +2856,7 @@ class CivitaiDownloadRef(BaseModel):
     token: str = ""
     nsfw: bool = False
     base: str = ""       # Civitai baseModel hint (e.g. "SDXL 1.0", "Pony", "Flux.1 D")
+    sha256: str = ""     # expected file hash from the Civitai catalog ("" = unknown)
 
 
 _civitai_dl: dict[str, Any] = {"status": "idle"}
@@ -2843,13 +2868,15 @@ class _DLCancelled(Exception):
     """Raised inside a download worker when the user cancels."""
 
 
-def _civitai_download_worker(url: str, filename: str, kind: str, token: str, base_hint: str = "") -> None:
+def _civitai_download_worker(url: str, filename: str, kind: str, token: str, base_hint: str = "",
+                             expected_sha256: str = "") -> None:
     try:
         dest_dir = DT_LORAS_DIR if kind == "lora" else DT_MODELS_DIR
         fn = os.path.basename(filename) or "civitai_model.safetensors"
         if os.path.splitext(fn)[1].lower() not in (".safetensors", ".ckpt", ".pt", ".bin"):
             fn += ".safetensors"
         tmp = dest_dir / (fn + ".part")
+        hasher = hashlib.sha256()
         with _civitai_request(url, token, timeout=60) as r, open(tmp, "wb") as out:
             total = int(r.headers.get("Content-Length", 0))
             done = 0
@@ -2860,12 +2887,19 @@ def _civitai_download_worker(url: str, filename: str, kind: str, token: str, bas
                 if not chunk:
                     break
                 out.write(chunk)
+                hasher.update(chunk)
                 done += len(chunk)
                 if done > _MAX_DOWNLOAD_BYTES:    # guard against a runaway/hostile stream filling the disk
                     raise RuntimeError("Download exceeded the size limit.")
                 with _civitai_lock:
                     _civitai_dl.update(status="downloading", done_mb=round(done / 1e6),
                                        total_mb=round(total / 1e6), file=fn)
+        # Weights are executable-adjacent (imported and run by the engine), so when
+        # the catalog published a hash, refuse bytes that don't match it — a CDN/MITM
+        # corruption must fail loudly, not land in the models dir.
+        if expected_sha256 and hasher.hexdigest().lower() != expected_sha256.lower():
+            raise RuntimeError("Checksum mismatch — the download doesn't match the "
+                               "SHA-256 Civitai published for this file. Discarded; try again.")
         final = dest_dir / fn
         if final.exists():                        # never silently clobber a curated/existing weight
             final = dest_dir / f"{final.stem}_{uuid.uuid4().hex[:6]}{final.suffix}"
@@ -2936,7 +2970,7 @@ def civitai_download(ref: CivitaiDownloadRef) -> dict:
     _civitai_cancel = False        # clear any stale cancel from a prior run
     threading.Thread(target=_civitai_download_worker,
                      args=(ref.download_url, ref.filename, ref.kind,
-                           ref.token or _civitai_token(), ref.base), daemon=True).start()
+                           ref.token or _civitai_token(), ref.base, ref.sha256), daemon=True).start()
     return {"status": "downloading"}
 
 
