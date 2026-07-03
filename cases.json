@@ -1,5 +1,42 @@
 [
-  {"id":"ft-product","title":"Product Shot Pro","modelCkpt":"juggernaut_xl_ragnarok_q6p_q8p.ckpt","fastTier":"fast","photoreal":true,"steps":8,"guidance":5.0,"template":"studio product shot of a perfume bottle on a marble pedestal, softbox lighting, white seamless background, commercial photography"},
-  {"id":"ft-landscape","title":"Epic Landscape","modelCkpt":"juggernaut_xl_ragnarok_q6p_q8p.ckpt","fastTier":"fast","photoreal":true,"steps":8,"guidance":5.0,"template":"vast mountain valley at golden hour, low clouds, a winding river, ultra detailed landscape photography"},
-  {"id":"ft-food","title":"Food Studio","modelCkpt":"juggernaut_xl_ragnarok_q6p_q8p.ckpt","fastTier":"fast","photoreal":true,"steps":8,"guidance":5.0,"template":"overhead shot of a rustic breakfast table, fresh bread, coffee, warm morning light, food photography"}
+ {
+  "id": "ft-product",
+  "title": "Product Shot Pro",
+  "modelCkpt": "juggernaut_xl_ragnarok_q6p_q8p.ckpt",
+  "fastTier": "fast",
+  "photoreal": true,
+  "steps": 8,
+  "guidance": 5.0,
+  "template": "studio product shot of a perfume bottle on a marble pedestal, softbox lighting, white seamless background, commercial photography"
+ },
+ {
+  "id": "ft-landscape",
+  "title": "Epic Landscape",
+  "modelCkpt": "juggernaut_xl_ragnarok_q6p_q8p.ckpt",
+  "fastTier": "fast",
+  "photoreal": true,
+  "steps": 8,
+  "guidance": 5.0,
+  "template": "vast mountain valley at golden hour, low clouds, a winding river, ultra detailed landscape photography"
+ },
+ {
+  "id": "ft-food",
+  "title": "Food Studio",
+  "modelCkpt": "juggernaut_xl_ragnarok_q6p_q8p.ckpt",
+  "fastTier": "fast",
+  "photoreal": true,
+  "steps": 8,
+  "guidance": 5.0,
+  "template": "overhead shot of a rustic breakfast table, fresh bread, coffee, warm morning light, food photography"
+ },
+ {
+  "id": "ft-poster",
+  "title": "Poster Studio",
+  "modelCkpt": "z_image_turbo_1.0_q6p.ckpt",
+  "fastTier": null,
+  "photoreal": false,
+  "steps": 0,
+  "guidance": 0,
+  "template": "minimal product launch poster, elegant serif headline reading 'SAGLITZ STUDIO', soft luminous gradient orbs on a cream background, fine grain, generous negative space, premium graphic design"
+ }
 ]
