@@ -3,19 +3,20 @@
   <channel>
     <title>Saglitz Studio</title>
     <item>
-      <title>1.16</title>
-      <sparkle:version>17</sparkle:version>
-      <sparkle:shortVersionString>1.16</sparkle:shortVersionString>
+      <title>1.17</title>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>1.17</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description><![CDATA[<ul>
-  <li>New: in-app "Relaunch to update" pill — updates download silently and apply with one click.</li>
-  <li>New: drag an image from Finder onto the canvas to use it as the starting image.</li>
-  <li>Generation Area now fits any opened image exactly.</li>
-  <li>Failed model/LoRA downloads and deletes now show clear error messages.</li>
-  <li>Busy engine no longer fails a generation — it waits its turn automatically.</li>
-  <li>New: Cancel button stops any local generation mid-run (including FLUX/Z-Image).</li>
+  <li><b>Cases</b> — one-click ready-made setups on Home (Fast &amp; Curious, Portrait Pro, Creator Studio, Animation): model, speed and realism come pre-wired. Save your own, share them as files, and get Featured packs updated remotely.</li>
+  <li><b>Fast &amp; Turbo modes</b> — distilled generation that makes any SDXL model up to ~8× quicker at near-full quality. One switch in the prompt bar.</li>
+  <li><b>Sharp upscale</b> — real AI super-resolution (Real-ESRGAN) to true 4K in seconds, replacing the old soft resize.</li>
+  <li><b>Photoreal boost</b> — a one-tap realism recipe for lifelike people.</li>
+  <li><b>Cancel any generation</b> mid-run, including FLUX and Z-Image.</li>
+  <li>Model picker now visible right in the prompt bar; download speed &amp; ETA on model rows; searchable Version History; a ⌘K command palette; drag an image onto the canvas to use it as a starting point.</li>
+  <li>Security &amp; polish: hardened engine boundary, verified downloads, a refreshed Home with the studio motif, and dozens of fixes.</li>
 </ul>]]></description>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-17.dmg" sparkle:edSignature="3pfFfrqBmwcDX6YZgCHH6AT1HNDIIE1THbD22pja2KJtLFMlGGzgZHVOFXncYisx+7XavLTyJgb+Yigw5DNvAg==" length="7380617" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-18.dmg" sparkle:edSignature="orXTnTRQjVK2WItgR+P521uilMtvCuuUeOcyz8WgwPUKug0dOEFacMTWE8GrNrus6GdaxfJfB0zQLBoarkdIBQ==" length="10834278" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
