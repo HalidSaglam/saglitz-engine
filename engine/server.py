@@ -517,6 +517,28 @@ class _CancelInterrupt:
 _CANCEL_INTERRUPT = _CancelInterrupt()
 
 
+# TeaCache (training-free timestep-embedding caching) skips redundant transformer
+# steps on NON-distilled mflux schedules (FLUX.1 dev at 20+ steps) for a free
+# ~1.2-1.5x with negligible quality loss. It's a no-op on distilled 4-9 step
+# models (schnell/turbo) — they skip 0 steps — so we only patch high-step specs
+# and swallow "no benefit"/incompatible cases. Off via SAGLITZ_TEACACHE=0.
+_TEACACHE_ON = os.environ.get("SAGLITZ_TEACACHE", "1") != "0"
+
+
+def _apply_teacache(model: Any, name: str, spec: dict) -> None:
+    if not _TEACACHE_ON or spec.get("default_steps", 0) < 15:
+        return
+    try:
+        import warnings
+        import mlx_teacache
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")       # NoBenefit/Disabled warnings are expected
+            mlx_teacache.apply_teacache(model)
+        print(f"  ⚡ TeaCache enabled for '{name}'")
+    except Exception as exc:                       # incompatible variant → silently skip
+        print(f"  · TeaCache not applied to '{name}' ({type(exc).__name__})")
+
+
 def _ensure_model(name: str) -> Any:
     """Load `name` if not already cached. MUST run on the MLX engine thread.
     Keeps only _MAX_RESIDENT_MODELS resident, LRU-evicting the rest so memory
@@ -535,6 +557,7 @@ def _ensure_model(name: str) -> Any:
     model = spec["build"](name)
     if hasattr(model, "callbacks"):               # enable /api/cancel for mflux models
         model.callbacks.register(_CANCEL_INTERRUPT)
+    _apply_teacache(model, name, spec)
     _models[name] = model
     _load_errors.pop(name, None)
     print(f"✓ '{name}' loaded ({time.time() - t0:.0f}s)")
