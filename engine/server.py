@@ -1979,10 +1979,70 @@ class VideoRequest(BaseModel):
     smooth: bool = True               # interpolate to 2x fps (full-res, fast)
 
 
+# --- RIFE: real AI frame interpolation (MIT, Metal via ncnn/Vulkan). Optical-flow
+# ffmpeg minterpolate warps/ghosts on fast motion; RIFE synthesizes true in-between
+# frames. Fetched on consent (SHA-pinned), only the binary + rife-v4.6 model kept
+# beside the engine. Falls back to minterpolate when unavailable.
+_RIFE_URL = ("https://github.com/nihui/rife-ncnn-vulkan/releases/download/"
+             "20221029/rife-ncnn-vulkan-20221029-macos.zip")
+_RIFE_SHA256 = "4a63a1f3c9c715773c57d2ee51df1b315ed20cd6c63103e45c483ecc4400b595"
+_RIFE_DIR = ROOT / "tools-rife"
+_RIFE_LOCK = threading.Lock()
+
+
+def _rife_exe() -> Optional[str]:
+    exe = _RIFE_DIR / "rife-ncnn-vulkan"
+    ok = exe.is_file() and os.access(exe, os.X_OK) and (_RIFE_DIR / "rife-v4.6" / "flownet.bin").is_file()
+    return str(exe) if ok else None
+
+
+def _ensure_rife() -> Optional[str]:
+    if (e := _rife_exe()):
+        return e
+    with _RIFE_LOCK:
+        if (e := _rife_exe()):
+            return e
+        try:
+            import io
+            import zipfile
+            req = urllib.request.Request(_RIFE_URL, headers={"User-Agent": "saglitz-engine"})
+            data = urllib.request.urlopen(req, timeout=300).read()
+            if hashlib.sha256(data).hexdigest() != _RIFE_SHA256:
+                return None
+            _RIFE_DIR.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                for n in z.namelist():
+                    base = os.path.basename(n)
+                    # Keep ONLY the binary + the rife-v4.6 model (skip 400MB of others).
+                    keep_bin = base == "rife-ncnn-vulkan"
+                    keep_model = "/rife-v4.6/" in n and base
+                    if not (keep_bin or keep_model) or ".." in n:
+                        continue
+                    dest = _RIFE_DIR / (Path("rife-v4.6") / base if keep_model else Path(base))
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(z.read(n))
+            os.chmod(_RIFE_DIR / "rife-ncnn-vulkan", 0o755)
+            return _rife_exe()
+        except Exception:
+            return None
+
+
+@app.get("/api/video/rife")
+def rife_status() -> dict:
+    return {"installed": _rife_exe() is not None, "size_mb": 36}
+
+
+@app.post("/api/video/rife/install")
+def rife_install() -> dict:
+    if _ensure_rife() is None:
+        raise HTTPException(status_code=502, detail="Couldn't download the smoothing tool — check your connection.")
+    return {"installed": True}
+
+
 def _smooth_video(path: str, factor: int = 2) -> None:
-    """Motion-compensated frame interpolation (ffmpeg minterpolate) — generate
-    fewer frames, then double the fps at FULL resolution for smooth, fast clips.
-    Silently no-ops if ffmpeg is missing or it fails."""
+    """Frame interpolation: RIFE (real AI in-between frames) when installed,
+    else ffmpeg minterpolate (optical flow). Generate fewer frames → interpolate
+    up for smooth, fast clips. Silently no-ops on failure."""
     ff = shutil.which("ffmpeg")
     if not ff:
         return
@@ -1999,6 +2059,35 @@ def _smooth_video(path: str, factor: int = 2) -> None:
         except Exception:
             fps = 16.0
     target = max(8, int(round(fps * factor)))
+
+    # RIFE path: decode → interpolate frames → re-encode at the higher fps.
+    rife = _rife_exe()
+    if rife:
+        try:
+            import tempfile as _tf
+            with _tf.TemporaryDirectory() as td:
+                fin, fout = os.path.join(td, "in"), os.path.join(td, "out")
+                os.makedirs(fin); os.makedirs(fout)
+                if _run([ff, "-y", "-v", "error", "-i", path, os.path.join(fin, "%06d.png")],
+                        capture_output=True, text=True).returncode != 0:
+                    raise RuntimeError("decode failed")
+                n_in = len([x for x in os.listdir(fin) if x.endswith(".png")])
+                if n_in >= 2:
+                    rr = _run([rife, "-m", str(_RIFE_DIR / "rife-v4.6"),
+                               "-i", fin, "-o", fout, "-n", str(n_in * factor)],
+                              capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT)
+                    if rr.returncode == 0 and len(os.listdir(fout)) >= n_in:
+                        tmp = path + ".rife.mp4"
+                        enc = _run([ff, "-y", "-v", "error", "-framerate", str(target),
+                                    "-i", os.path.join(fout, "%06d.png"),
+                                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", tmp],
+                                   capture_output=True, text=True)
+                        if enc.returncode == 0 and os.path.isfile(tmp):
+                            os.replace(tmp, path)
+                            return
+        except Exception:
+            pass        # fall through to minterpolate
+
     tmp = path + ".smooth.mp4"
     r = _run([ff, "-y", "-v", "error", "-i", path, "-vf",
                         f"minterpolate=fps={target}:mi_mode=mci:mc_mode=aobmc:vsbmc=1", tmp],
