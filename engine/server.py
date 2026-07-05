@@ -2565,6 +2565,24 @@ def _adur(path) -> float:
         return 0.0
 
 
+def _loudnorm(path: str, lufs: float = -16.0) -> bool:
+    """Broadcast-standard loudness normalization (EBU R128) to `lufs` — the level
+    podcasts/voiceovers target. In-place; silently no-ops if ffmpeg is missing."""
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        return False
+    tmp = path + ".norm.wav"
+    r = _run([ff, "-y", "-v", "error", "-i", path,
+              "-af", f"loudnorm=I={lufs}:TP=-1.5:LRA=11", "-ar", "44100", tmp],
+             capture_output=True, text=True)
+    if r.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 500:
+        os.replace(tmp, path)
+        return True
+    if os.path.isfile(tmp):
+        os.remove(tmp)
+    return False
+
+
 def _vdims(path) -> tuple[int, int]:
     fp = shutil.which("ffprobe")
     try:
@@ -4075,6 +4093,88 @@ def audio_word_edit(req: WordEditRequest) -> dict:
     finally:
         import shutil as _sh
         _sh.rmtree(td, ignore_errors=True)
+
+
+# === Audio post-production: level + de-filler (pure ffmpeg/whisper, no new deps) =
+@app.post("/api/audio/level")
+def audio_level(req: WordsRequest) -> dict:
+    """Normalize a clip to broadcast loudness (-16 LUFS) — consistent volume like
+    Descript/Auphonic 'auto-level'. Writes a new file so the original is kept."""
+    proj = _safe_project(req.project)
+    d = _project_dir(proj)
+    fp = _safe_project_file(d, req.file)
+    out_name = f"leveled_{uuid.uuid4().hex[:6]}.wav"
+    out = d / out_name
+    import shutil as _sh
+    _sh.copyfile(fp, out)
+    if not _loudnorm(str(out)):
+        out.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Leveling failed (is ffmpeg installed?).")
+    return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}",
+            "duration": round(_adur(out), 2)}
+
+
+# Pure disfluencies only — safe to auto-cut. Deliberately NOT including crutch
+# words (like/basically/yani/işte) that are often real words in context.
+_FILLERS = {
+    "uh", "um", "uhm", "uhh", "umm", "erm", "er", "hmm", "hm", "mm", "mmm",
+    "ah", "eh", "uhh",                                       # EN
+    "şey", "ee", "eee", "ıı", "ıhı",                        # TR
+    "äh", "ähm", "öh", "öhm",                                # DE
+}
+
+
+@app.post("/api/audio/defiller")
+def audio_defiller(req: WordsRequest) -> dict:
+    """Detect and cut filler words ('uh', 'um', 'şey', 'ähm'…) using Whisper
+    word timestamps — the Descript/ElevenLabs Studio 'remove fillers' feature."""
+    proj = _safe_project(req.project)
+    d = _project_dir(proj)
+    fp = _safe_project_file(d, req.file)
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise HTTPException(status_code=500, detail="ffmpeg not found.")
+    import mlx_whisper
+    try:
+        r = _mlx(lambda: mlx_whisper.transcribe(fp, path_or_hf_repo=WHISPER_REPO, word_timestamps=True))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+    norm = lambda w: "".join(c for c in w.lower().strip() if c.isalpha())
+    cuts = [(float(w["start"]), float(w["end"]))
+            for s in r["segments"] for w in s.get("words", [])
+            if norm(w["word"]) in _FILLERS]
+    if not cuts:
+        return {"removed": 0, "file": req.file, "project": proj,
+                "url": f"/media/{proj}/{os.path.basename(req.file)}"}
+    dur = _adur(fp)
+    # Build the KEEP ranges = the gaps between cuts (with a tiny pad so we don't
+    # clip the neighbouring words).
+    pad = 0.02
+    keep, cur = [], 0.0
+    for (cs, ce) in sorted(cuts):
+        cs = max(cur, cs - pad); ce = min(dur, ce + pad)
+        if cs > cur:
+            keep.append((cur, cs))
+        cur = max(cur, ce)
+    if cur < dur:
+        keep.append((cur, dur))
+    keep = [(a, b) for (a, b) in keep if b - a > 0.02]
+    if not keep:
+        raise HTTPException(status_code=400, detail="Nothing left after removing fillers.")
+    # atrim each kept range + concat — reliable, unlike aselect which renumbers
+    # frames but doesn't actually drop them from the container.
+    parts = "".join(f"[0]atrim={a:.3f}:{b:.3f},asetpts=PTS-STARTPTS[s{i}];"
+                    for i, (a, b) in enumerate(keep))
+    labels = "".join(f"[s{i}]" for i in range(len(keep)))
+    fc = f"{parts}{labels}concat=n={len(keep)}:v=0:a=1[out]"
+    out_name = f"defiller_{uuid.uuid4().hex[:6]}.wav"
+    out = d / out_name
+    rc = _run([ff, "-y", "-v", "error", "-i", fp, "-filter_complex", fc,
+               "-map", "[out]", str(out)], capture_output=True, text=True)
+    if rc.returncode != 0 or not out.is_file():
+        raise HTTPException(status_code=500, detail=f"De-filler failed: {(rc.stderr or '')[-200:]}")
+    return {"removed": len(cuts), "file": out_name, "project": proj,
+            "url": f"/media/{proj}/{out_name}", "duration": round(_adur(out), 2)}
 
 
 # === Image: AI background removal (rembg + BiRefNet, MIT, best edges) ============
