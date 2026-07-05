@@ -688,6 +688,7 @@ class GenerateRequest(BaseModel):
     scheduler: Optional[str] = None         # mflux only: linear | flow_match_euler_discrete
     dt_sampler: Optional[int] = None        # DT only: sampler enum (10 = Euler A Trailing,
                                             # required by Hyper/Lightning step-distilled LoRAs)
+    auto_detail: bool = False               # ADetailer: re-render detected faces at low denoise
 
 
 def _round16(v: int) -> int:
@@ -1515,7 +1516,7 @@ def generate(req: GenerateRequest) -> dict:
     try:
         # Run the work on the dedicated engine thread and block for the result.
         fn = _dt_generate if is_dt else _do_generate
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"auto_detail": bool(req.auto_detail)}
         if is_dt:
             kwargs["loras"] = _safe_loras(req.loras, dt_reg)
             if req.dt_sampler is not None:
@@ -1548,13 +1549,84 @@ def _safe_scheduler(s: Optional[str]) -> Optional[str]:
     return s if s in _ALLOWED_SCHEDULERS else None
 
 
+# --- Auto face detailer (ADetailer-style): detect faces on a finished image and
+# re-render each at low denoise so eyes/skin/features sharpen. Uses OpenCV Haar
+# (bundled, no download); the refine pass reuses the same model as img2img.
+_FACE_CASCADE = None
+
+
+def _face_boxes(pil_img: "Image.Image") -> list[tuple[int, int, int, int]]:
+    global _FACE_CASCADE
+    try:
+        import cv2
+        import numpy as np
+        if _FACE_CASCADE is None:
+            _FACE_CASCADE = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        gray = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2GRAY)
+        minsz = max(48, min(pil_img.size) // 12)   # ignore tiny false positives
+        faces = _FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6,
+                                               minSize=(minsz, minsz))
+        return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces][:4]
+    except Exception:
+        return []
+
+
+def _auto_detail_faces(base: "Image.Image", name: str, is_dt: bool, dt_reg: Optional[dict],
+                       spec: dict, seed: int) -> "Image.Image":
+    """Re-render each detected face at low denoise and feather it back in."""
+    boxes = _face_boxes(base)
+    if not boxes:
+        return base
+    bw, bh = base.size
+    out = base.copy()
+    face_prompt = "a face, detailed symmetric eyes, sharp facial features, natural skin texture, photorealistic"
+    face_neg = "blurry, deformed, extra eyes, asymmetric eyes, distorted face, plastic skin"
+    r64 = lambda v: max(64, min(1024, (int(v) // 64) * 64))
+    for (fx, fy, fw, fh) in boxes:
+        pad = max(24, fw // 3, fh // 3)              # context around the face
+        x = max(0, fx - pad); y = max(0, fy - pad)
+        w = min(bw, fx + fw + pad) - x; h = min(bh, fy + fh + pad) - y
+        gw, gh = r64(w), r64(h)
+        crop = out.crop((x, y, x + w, y + h)).resize((gw, gh))
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                cin, cout = os.path.join(td, "i.png"), os.path.join(td, "o.png")
+                crop.save(cin)
+                if is_dt:
+                    _dt_run(cout, dt_reg, face_prompt, gw, gh, min(20, spec.get("default_steps", 20)),
+                            spec.get("recommended_cfg", 5.0) if spec.get("use_guidance") else 3.5,
+                            seed, face_neg if spec.get("negative") else None, cin, 0.4, None)
+                else:
+                    mdl = _ensure_model(name)
+                    kw: dict[str, Any] = dict(seed=seed, prompt=face_prompt, width=gw, height=gh,
+                                              num_inference_steps=spec.get("default_steps", 9),
+                                              image_path=cin, image_strength=0.4)
+                    if spec.get("use_guidance"):
+                        kw["guidance"] = 3.5
+                    if spec.get("negative"):
+                        kw["negative_prompt"] = face_neg
+                    _mflux_cancel.clear()
+                    mdl.generate_image(**kw).save(path=cout)
+                region = Image.open(cout).convert("RGB").resize((w, h))
+        except Exception:
+            continue                                 # a failed face never breaks the image
+        feather = max(2, min(w, h) // 8)
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).ellipse([feather, feather, w - feather, h - feather], fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(feather))
+        out.paste(region, (x, y), mask)
+    return out
+
+
 def _do_generate(name: str, project: str, prompt: str, width: int, height: int,
                  steps: int, guidance: float, seed: int,
                  negative_prompt: Optional[str],
                  image_path: Optional[str] = None,
                  image_strength: Optional[float] = None,
                  loras: Optional[list[dict]] = None,
-                 scheduler: Optional[str] = None) -> dict:
+                 scheduler: Optional[str] = None,
+                 auto_detail: bool = False) -> dict:
     """Runs on the single MLX engine thread (consistent GPU stream)."""
     spec = MODEL_SPECS[name]
     try:
@@ -1606,7 +1678,15 @@ def _do_generate(name: str, project: str, prompt: str, width: int, height: int,
     gen_id = uuid.uuid4().hex[:12]
     stamp = time.strftime("%Y%m%d-%H%M%S")
     fname = f"{stamp}_{name}_seed{seed}_{gen_id[:6]}.png"
-    image.save(path=str(_project_dir(project) / fname))
+    save_path = str(_project_dir(project) / fname)
+    image.save(path=save_path)
+    if auto_detail:
+        try:                                    # ADetailer pass; never breaks the base image
+            refined = _auto_detail_faces(Image.open(save_path).convert("RGB"),
+                                         name, False, None, spec, seed)
+            refined.save(save_path)
+        except Exception:
+            pass
     entry = {
         "id": gen_id, "file": fname, "project": project,
         "url": f"/media/{project}/{fname}",
@@ -1772,7 +1852,8 @@ def _dt_generate(name: str, project: str, prompt: str, width: int, height: int,
                  image_path: Optional[str] = None,
                  image_strength: Optional[float] = None,
                  loras: Optional[list[dict]] = None,
-                 sampler: Optional[int] = None) -> dict:
+                 sampler: Optional[int] = None,
+                 auto_detail: bool = False) -> dict:
     """Generate via the Draw Things CLI subprocess. Writes the PNG straight into
     projects/<project>/ and records both manifests, like the mflux path."""
     reg = _dt_resolve(name)
@@ -1784,6 +1865,13 @@ def _dt_generate(name: str, project: str, prompt: str, width: int, height: int,
     t0 = time.time()
     _dt_run(str(out_path), reg, prompt, width, height, steps, guidance, seed,
             negative_prompt, image_path, image_strength, loras, sampler)
+    if auto_detail and out_path.is_file():
+        try:                                    # ADetailer face pass (best-effort)
+            refined = _auto_detail_faces(Image.open(str(out_path)).convert("RGB"),
+                                         name, True, reg, reg, seed)
+            refined.save(str(out_path))
+        except Exception:
+            pass
     elapsed = time.time() - t0
 
     entry = {
