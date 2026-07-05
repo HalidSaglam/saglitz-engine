@@ -826,13 +826,14 @@ def config() -> dict:
         "projects": _list_projects(),
         "models": [
             {"id": k, "label": v["label"], "default_steps": v["default_steps"],
-             "negative": v["negative"]}
+             "negative": v["negative"], "use_guidance": v.get("use_guidance", True)}
             for k, v in MODEL_SPECS.items()
         ] + [
             {"id": m["ckpt"],
              "label": _CURATED_META[m["ckpt"]]["label"] if m["ckpt"] in _CURATED_META else m["name"],
              "default_steps": _CURATED_META[m["ckpt"]]["default_steps"] if m["ckpt"] in _CURATED_META else 20,
-             "negative": True}
+             "negative": True,
+             "use_guidance": _CURATED_META[m["ckpt"]].get("use_guidance", True) if m["ckpt"] in _CURATED_META else True}
             for m in _dt_full_catalog() if _dt_downloaded(m["ckpt"])
         ],
         "resolutions": [
