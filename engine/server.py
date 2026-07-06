@@ -3814,6 +3814,56 @@ def _transcribe(path: str) -> str:
     return _mlx(lambda: mlx_whisper.transcribe(path, path_or_hf_repo=WHISPER_REPO))["text"].strip()
 
 
+# Parakeet TDT-v3 (Apache/CC-BY-4.0): ~49× faster than whisper and — crucially —
+# it keeps disfluencies (uh/um) that whisper-base normalizes away, so filler
+# removal actually finds them. English/EU only; returns [] for unsupported langs
+# (e.g. Turkish) so callers fall back to whisper.
+_PARAKEET = None
+_PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
+
+
+def _parakeet_words(path: str) -> list[dict]:
+    """[{word,start,end}] via Parakeet at 16 kHz mono, or [] if it can't."""
+    global _PARAKEET
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        return []
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            w16 = os.path.join(td, "a.wav")
+            if _run([ff, "-y", "-v", "error", "-i", path, "-ar", "16000", "-ac", "1", w16],
+                    capture_output=True, text=True).returncode != 0:
+                return []
+
+            def _run_pk():
+                global _PARAKEET
+                if _PARAKEET is None:
+                    from parakeet_mlx import from_pretrained
+                    _PARAKEET = from_pretrained(_PARAKEET_REPO)
+                return _PARAKEET.transcribe(w16)
+
+            res = _mlx(_run_pk)
+            out = [{"word": t.text.strip(), "start": round(float(t.start), 3),
+                    "end": round(float(t.end), 3)}
+                   for s in res.sentences for t in s.tokens if t.text.strip()]
+            return out
+    except Exception:
+        return []
+
+
+def _words(path: str) -> tuple[str, list[dict]]:
+    """Word-level transcript, Parakeet-first (better fillers), whisper fallback."""
+    pk = _parakeet_words(path)
+    if pk:
+        return " ".join(w["word"] for w in pk), pk
+    import mlx_whisper
+    r = _mlx(lambda: mlx_whisper.transcribe(path, path_or_hf_repo=WHISPER_REPO, word_timestamps=True))
+    words = [{"word": w["word"].strip(), "start": round(float(w["start"]), 3),
+              "end": round(float(w["end"]), 3)}
+             for s in r["segments"] for w in s.get("words", [])]
+    return r["text"].strip(), words
+
+
 class AudioCloneRequest(BaseModel):
     project: Optional[str] = None
     text: str                        # what to say in the cloned voice
@@ -4116,15 +4166,11 @@ def audio_words(req: WordsRequest) -> dict:
     proj = _safe_project(req.project)
     d = _project_dir(proj)
     fp = _safe_project_file(d, req.file)
-    import mlx_whisper
     try:
-        r = _mlx(lambda: mlx_whisper.transcribe(fp, path_or_hf_repo=WHISPER_REPO, word_timestamps=True))
+        text, words = _words(fp)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
-    words = [{"word": w["word"].strip(), "start": round(float(w["start"]), 3),
-              "end": round(float(w["end"]), 3)}
-             for s in r["segments"] for w in s.get("words", [])]
-    return {"text": r["text"].strip(), "words": words}
+    return {"text": text, "words": words}
 
 
 class WordEditRequest(BaseModel):
@@ -4259,15 +4305,13 @@ def audio_defiller(req: WordsRequest) -> dict:
     ff = shutil.which("ffmpeg")
     if not ff:
         raise HTTPException(status_code=500, detail="ffmpeg not found.")
-    import mlx_whisper
     try:
-        r = _mlx(lambda: mlx_whisper.transcribe(fp, path_or_hf_repo=WHISPER_REPO, word_timestamps=True))
+        _, words = _words(fp)              # Parakeet keeps 'uh/um'; whisper drops them
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
     norm = lambda w: "".join(c for c in w.lower().strip() if c.isalpha())
     cuts = [(float(w["start"]), float(w["end"]))
-            for s in r["segments"] for w in s.get("words", [])
-            if norm(w["word"]) in _FILLERS]
+            for w in words if norm(w["word"]) in _FILLERS]
     if not cuts:
         return {"removed": 0, "file": req.file, "project": proj,
                 "url": f"/media/{proj}/{os.path.basename(req.file)}"}
