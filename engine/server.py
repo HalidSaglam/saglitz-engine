@@ -4214,6 +4214,31 @@ def audio_level(req: WordsRequest) -> dict:
             "duration": round(_adur(out), 2)}
 
 
+@app.post("/api/audio/enhance")
+def audio_enhance(req: WordsRequest) -> dict:
+    """One-click 'Studio Sound': high-pass rumble cut → FFT denoise → de-ess →
+    loudness normalize. Pure ffmpeg, no models. Makes rough voice recordings
+    sound clean and consistent (the Descript/Adobe Podcast 'enhance' feature)."""
+    proj = _safe_project(req.project)
+    d = _project_dir(proj)
+    fp = _safe_project_file(d, req.file)
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise HTTPException(status_code=500, detail="ffmpeg not found.")
+    out_name = f"enhanced_{uuid.uuid4().hex[:6]}.wav"
+    out = d / out_name
+    chain = ("highpass=f=80,"                       # drop low rumble/hum
+             "afftdn=nf=-25,"                        # FFT noise reduction
+             "deesser=i=0.4,"                        # tame harsh sibilance
+             "loudnorm=I=-16:TP=-1.5:LRA=11")        # broadcast loudness
+    rc = _run([ff, "-y", "-v", "error", "-i", fp, "-af", chain, "-ar", "44100", str(out)],
+              capture_output=True, text=True)
+    if rc.returncode != 0 or not out.is_file():
+        raise HTTPException(status_code=500, detail=f"Enhance failed: {(rc.stderr or '')[-200:]}")
+    return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}",
+            "duration": round(_adur(out), 2)}
+
+
 # Pure disfluencies only — safe to auto-cut. Deliberately NOT including crutch
 # words (like/basically/yani/işte) that are often real words in context.
 _FILLERS = {
