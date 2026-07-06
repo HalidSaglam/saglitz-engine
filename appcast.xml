@@ -3,20 +3,21 @@
   <channel>
     <title>Saglitz Studio</title>
     <item>
-      <title>1.17</title>
-      <sparkle:version>18</sparkle:version>
-      <sparkle:shortVersionString>1.17</sparkle:shortVersionString>
+      <title>1.18</title>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>1.18</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description><![CDATA[<ul>
-  <li><b>Cases</b> — one-click ready-made setups on Home (Fast &amp; Curious, Portrait Pro, Creator Studio, Animation): model, speed and realism come pre-wired. Save your own, share them as files, and get Featured packs updated remotely.</li>
-  <li><b>Fast &amp; Turbo modes</b> — distilled generation that makes any SDXL model up to ~8× quicker at near-full quality. One switch in the prompt bar.</li>
-  <li><b>Sharp upscale</b> — real AI super-resolution (Real-ESRGAN) to true 4K in seconds, replacing the old soft resize.</li>
-  <li><b>Photoreal boost</b> — a one-tap realism recipe for lifelike people.</li>
-  <li><b>Cancel any generation</b> mid-run, including FLUX and Z-Image.</li>
-  <li>Model picker now visible right in the prompt bar; download speed &amp; ETA on model rows; searchable Version History; a ⌘K command palette; drag an image onto the canvas to use it as a starting point.</li>
-  <li>Security &amp; polish: hardened engine boundary, verified downloads, a refreshed Home with the studio motif, and dozens of fixes.</li>
+  <li><b>Coherent people</b> — a one-tap Portrait Pro mode (Home → Portrait Pro → “Coherent people”) that fixes the headless / mangled-anatomy failures of the fast default, using a coherent model you already have. No download.</li>
+  <li><b>Auto face detailer</b> — Photoreal boost now re-renders detected faces for sharper eyes and skin, especially on full-body and group shots.</li>
+  <li><b>Türkçe / Deutsch voice</b> — a commercial-safe local voice in Turkish, German and 21 more languages, with optional voice cloning (Audio → “Türkçe/DE”, one-time setup).</li>
+  <li><b>Enhance / clean up</b> — one-click Studio Sound (denoise, de-ess, level) on any clip, plus <b>Remove filler words</b> and <b>Auto-level</b>, powered by faster, more accurate transcription.</li>
+  <li><b>AI video smoothing (RIFE)</b> — real synthesized in-between frames instead of blurry optical-flow motion. Video also gets sensible defaults (≈3s clips, quality model), a length shown in seconds, a player that closes with Done/Esc, and a “new” marker on the latest clip.</li>
+  <li><b>RAM-fit badges</b> on models so you pick one that fits your Mac before downloading.</li>
+  <li><b>Clearer controls</b> — anything a model can’t use (CFG, seed, negative prompt, Fast mode…) is now visibly disabled instead of silently doing nothing.</li>
+  <li>One-click <b>Edit</b> setup, closable video menus with Delete, right-click that shows the app menu, and dozens of smaller fixes and polish throughout.</li>
 </ul>]]></description>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-18.dmg" sparkle:edSignature="orXTnTRQjVK2WItgR+P521uilMtvCuuUeOcyz8WgwPUKug0dOEFacMTWE8GrNrus6GdaxfJfB0zQLBoarkdIBQ==" length="10834278" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-19.dmg" sparkle:edSignature="F2VYE3sXttuSFrBoT/36VZqrzJgbfgPDlcDNHOsKgj0ajF7Xh2LSyVolNdhCg1Di1jEL6jJlplZ6zXBLi3VTDQ==" length="11034474" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
