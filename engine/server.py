@@ -3920,6 +3920,106 @@ def audio_clone(req: AudioCloneRequest) -> dict:
             "ref_text": ref_text, "duration": round(_adur(out), 2)}
 
 
+# === Chatterbox Multilingual TTS (MIT, commercial TR/DE/23-lang + cloning) ======
+# Lives in an ISOLATED venv (tools-chatterbox/venv): chatterbox-mlx pulls
+# transformers 4.x + torch 2.8, which conflict with mflux (transformers 5.x). We
+# only ever talk to it via subprocess + JSON (chatterbox_synth.py). Set up on
+# consent (~heavy), like the RIFE/Real-ESRGAN tools.
+_CB_DIR = ROOT / "tools-chatterbox"
+_CB_VENV = _CB_DIR / "venv"
+_CB_PY = _CB_VENV / "bin" / "python"
+_CB_SCRIPT = Path(__file__).resolve().parent / "chatterbox_synth.py"
+_CB_LANGS = {"ar": "Arabic", "da": "Danish", "de": "German", "el": "Greek",
+             "en": "English", "es": "Spanish", "fi": "Finnish", "fr": "French",
+             "he": "Hebrew", "hi": "Hindi", "it": "Italian", "ja": "Japanese",
+             "ko": "Korean", "ms": "Malay", "nl": "Dutch", "no": "Norwegian",
+             "pl": "Polish", "pt": "Portuguese", "ru": "Russian", "sv": "Swedish",
+             "sw": "Swahili", "tr": "Turkish", "zh": "Chinese"}
+_CB_LOCK = threading.Lock()
+
+
+def _cb_ready() -> bool:
+    return _CB_PY.is_file() and os.access(_CB_PY, os.X_OK)
+
+
+def _cb_install() -> Optional[str]:
+    """Create the isolated venv and install chatterbox-mlx. Returns None on
+    success, else an error string. Runs once (guarded)."""
+    with _CB_LOCK:
+        if _cb_ready():
+            return None
+        try:
+            _CB_DIR.mkdir(parents=True, exist_ok=True)
+            import venv as _venv
+            _venv.create(str(_CB_VENV), with_pip=True)
+            pip = str(_CB_VENV / "bin" / "pip")
+            r = subprocess.run([pip, "install", "--quiet", "chatterbox-mlx"],
+                               capture_output=True, text=True, timeout=1800)
+            if r.returncode != 0 or not _cb_ready():
+                return f"pip install failed: {(r.stderr or r.stdout or '')[-300:]}"
+            return None
+        except Exception as exc:
+            return f"setup failed: {exc}"
+
+
+@app.get("/api/audio/chatterbox")
+def chatterbox_status() -> dict:
+    return {"installed": _cb_ready(), "languages": _CB_LANGS, "size_mb": 2600}
+
+
+@app.post("/api/audio/chatterbox/install")
+def chatterbox_install() -> dict:
+    err = _cb_install()
+    if err:
+        raise HTTPException(status_code=502, detail=f"Couldn't set up Chatterbox — {err}")
+    return {"installed": True}
+
+
+class ChatterboxRequest(BaseModel):
+    project: Optional[str] = None
+    text: str
+    lang: str = "tr"
+    ref_file: Optional[str] = None     # optional in-project reference → voice clone
+    cfg: float = 0.7
+    temperature: float = 0.6
+    exaggeration: float = 0.4
+
+
+@app.post("/api/audio/chatterbox/tts")
+def chatterbox_tts(req: ChatterboxRequest) -> dict:
+    """Commercial multilingual TTS/clone via the isolated Chatterbox venv."""
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text.")
+    if req.lang not in _CB_LANGS:
+        raise HTTPException(status_code=400, detail=f"Unsupported language '{req.lang}'.")
+    if not _cb_ready():
+        raise HTTPException(status_code=409, detail="Chatterbox isn't installed yet.")
+    proj = _safe_project(req.project)
+    d = _project_dir(proj)
+    ref = _safe_project_file(d, req.ref_file) if req.ref_file else None
+    out_name = f"chatterbox_{req.lang}_{uuid.uuid4().hex[:6]}.wav"
+    out = d / out_name
+    cmd = [str(_CB_PY), str(_CB_SCRIPT), "--text", text, "--lang", req.lang,
+           "--out", str(out), "--cfg", str(req.cfg), "--temp", str(req.temperature),
+           "--exaggeration", str(req.exaggeration)]
+    if ref:
+        cmd += ["--ref", ref]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=_DT_GEN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Chatterbox timed out.")
+    line = (r.stdout or "").strip().splitlines()[-1] if r.stdout.strip() else ""
+    try:
+        res = json.loads(line)
+    except Exception:
+        res = {"ok": False, "error": (r.stderr or r.stdout or "no output")[-300:]}
+    if not res.get("ok") or not out.is_file():
+        raise HTTPException(status_code=500, detail=f"Chatterbox failed: {res.get('error', 'unknown')}")
+    return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}",
+            "duration": res.get("dur", round(_adur(out), 2)), "lang": req.lang}
+
+
 # === Audio: Sound FX / ambience generation (AudioLDM, text->audio) ==============
 _audioldm = None
 _audioldm_lock = threading.Lock()
