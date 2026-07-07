@@ -3,21 +3,18 @@
   <channel>
     <title>Saglitz Studio</title>
     <item>
-      <title>1.18</title>
-      <sparkle:version>19</sparkle:version>
-      <sparkle:shortVersionString>1.18</sparkle:shortVersionString>
+      <title>1.19</title>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>1.19</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description><![CDATA[<ul>
-  <li><b>Coherent people</b> — a one-tap Portrait Pro mode (Home → Portrait Pro → “Coherent people”) that fixes the headless / mangled-anatomy failures of the fast default, using a coherent model you already have. No download.</li>
-  <li><b>Auto face detailer</b> — Photoreal boost now re-renders detected faces for sharper eyes and skin, especially on full-body and group shots.</li>
-  <li><b>Türkçe / Deutsch voice</b> — a commercial-safe local voice in Turkish, German and 21 more languages, with optional voice cloning (Audio → “Türkçe/DE”, one-time setup).</li>
-  <li><b>Enhance / clean up</b> — one-click Studio Sound (denoise, de-ess, level) on any clip, plus <b>Remove filler words</b> and <b>Auto-level</b>, powered by faster, more accurate transcription.</li>
-  <li><b>AI video smoothing (RIFE)</b> — real synthesized in-between frames instead of blurry optical-flow motion. Video also gets sensible defaults (≈3s clips, quality model), a length shown in seconds, a player that closes with Done/Esc, and a “new” marker on the latest clip.</li>
-  <li><b>RAM-fit badges</b> on models so you pick one that fits your Mac before downloading.</li>
-  <li><b>Clearer controls</b> — anything a model can’t use (CFG, seed, negative prompt, Fast mode…) is now visibly disabled instead of silently doing nothing.</li>
-  <li>One-click <b>Edit</b> setup, closable video menus with Delete, right-click that shows the app menu, and dozens of smaller fixes and polish throughout.</li>
+  <li><b>Talking-head video</b> — turn a portrait + a voice clip into a lip-synced talking video. In the Audio studio, right-click a clip → “Make a talking video…”, pick a face, and your persona speaks. Pairs perfectly with the Turkish/German voice. (Uses your fal.ai key.)</li>
+  <li><b>Send a photo “To Video”</b> — any generated image now has a one-tap handoff into the Video studio as the image-to-video start frame, no file picker.</li>
+  <li><b>Multi-size social export</b> — reframe a clip to Reels/TikTok 9:16, Square 1:1 and Portrait 4:5 in one click, subject kept centered.</li>
+  <li><b>Save your full setup</b> — “Save as case” now captures the whole recipe (model, steps, guidance, <b>negative prompt, size and LoRAs</b>), so a saved look reproduces exactly.</li>
+  <li><b>Fixes &amp; reliability</b> — the Turkish/German voice setup can no longer get stuck half-installed; long downloads no longer time out on the app side; filler-word removal is honest about non-English clips; the auto face detailer no longer slows big group shots; the video player closes with Esc; and a batch of smaller polish.</li>
 </ul>]]></description>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-19.dmg" sparkle:edSignature="F2VYE3sXttuSFrBoT/36VZqrzJgbfgPDlcDNHOsKgj0ajF7Xh2LSyVolNdhCg1Di1jEL6jJlplZ6zXBLi3VTDQ==" length="11034474" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-20.dmg" sparkle:edSignature="oxw4fqifX80vIiO8GFzQ790HvAQ/R/vkn1p3/vHWG5UavhhuvVsmmGTByY8h2Vsv8HxrpTBgdPUs5UjRDkXeBw==" length="11043689" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
