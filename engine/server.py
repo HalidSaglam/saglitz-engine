@@ -3610,6 +3610,79 @@ def generate_video_cloud(req: CloudVideoRequest) -> dict:
     return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}"}
 
 
+def _audio_data_uri(path: str) -> str:
+    ext = os.path.splitext(path)[1].lstrip(".").lower() or "wav"
+    mime = "mpeg" if ext == "mp3" else ("mp4" if ext in ("m4a", "aac") else ext)
+    with open(path, "rb") as f:
+        return f"data:audio/{mime};base64," + base64.b64encode(f.read()).decode()
+
+
+class TalkingHeadRequest(BaseModel):
+    project: Optional[str] = None
+    image_file: str                # a portrait in the project (gallery / persona)
+    audio_file: str                # a speech clip in the project (TTS / clone)
+    model: str = "fal-ai/bytedance/omnihuman"
+
+
+@app.post("/api/video/talkinghead")
+def talking_head(req: TalkingHeadRequest) -> dict:
+    """Lip-synced talking video from a still portrait + a speech clip, via fal.ai
+    (BYOK). Local lip-sync isn't viable on Apple Silicon (no commercial-safe model
+    runs well), so this is cloud-only. Feeds Chatterbox/gallery audio straight in."""
+    key = _load_keys().get("fal")
+    if not key:
+        raise HTTPException(status_code=400, detail="No fal.ai key. Settings → Cloud keys.")
+    if not _FAL_MODEL_RE.match(req.model.strip().strip("/")):
+        raise HTTPException(status_code=400, detail="Invalid model id.")
+    proj = _safe_project(req.project)
+    d = _project_dir(proj)
+    img = _safe_media_path(req.image_file)
+    aud = _safe_media_path(req.audio_file)
+    headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+    body = {"image_url": _data_uri(img), "audio_url": _audio_data_uri(aud)}
+    base = f"https://queue.fal.run/{req.model.strip().strip('/')}"
+    out_name = f"talkinghead_{uuid.uuid4().hex[:6]}.mp4"
+    out = d / out_name
+    try:
+        with httpx.Client(timeout=httpx.Timeout(connect=10, read=90, write=90, pool=10)) as c:
+            sub = c.post(base, headers=headers, json=body)
+            if sub.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"fal.ai rejected ({sub.status_code}): {sub.text[:300]}")
+            j = sub.json()
+            status_url, response_url = j.get("status_url"), j.get("response_url")
+            if not (_fal_url_ok(status_url) and _fal_url_ok(response_url)):
+                raise HTTPException(status_code=502, detail=f"fal.ai unexpected response: {str(j)[:200]}")
+            for _ in range(360):                       # ~12 min
+                time.sleep(2.0)
+                stj = c.get(status_url, headers=headers).json()
+                s = stj.get("status")
+                if s == "COMPLETED":
+                    break
+                if s in ("ERROR", "FAILED"):
+                    raise HTTPException(status_code=502, detail=f"fal.ai error: {str(stj)[:200]}")
+            else:
+                raise HTTPException(status_code=504, detail="fal.ai timeout (12 min).")
+            res = c.get(response_url, headers=headers).json()
+            video_url = _find_video_url(res)
+            if not (video_url and _fal_media_ok(video_url)):
+                raise HTTPException(status_code=502, detail=f"fal.ai result has no usable video: {str(res)[:200]}")
+            with c.stream("GET", video_url) as r:
+                r.raise_for_status()
+                done = 0
+                with open(out, "wb") as f:
+                    for chunk in r.iter_bytes():
+                        f.write(chunk); done += len(chunk)
+                        if done > _MAX_DOWNLOAD_BYTES:
+                            raise HTTPException(status_code=502, detail="Result video exceeded the size limit.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"fal.ai call failed: {exc}")
+    if not out.is_file() or out.stat().st_size < 1000:
+        raise HTTPException(status_code=502, detail="Could not download the talking video.")
+    return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}", "kind": "video"}
+
+
 # === Audio Studio: local Kokoro TTS (sentence-by-sentence) ======================
 _kokoro_pipes: dict[str, Any] = {}
 _kokoro_lock = threading.Lock()
