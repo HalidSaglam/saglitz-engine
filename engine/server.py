@@ -1593,21 +1593,23 @@ def _auto_detail_faces(base: "Image.Image", name: str, is_dt: bool, dt_reg: Opti
             with tempfile.TemporaryDirectory() as td:
                 cin, cout = os.path.join(td, "i.png"), os.path.join(td, "o.png")
                 crop.save(cin)
+                # Cap the per-face pass at 12 steps so a high-step base model
+                # (e.g. 30) can't turn a 4-face image into 4 extra full renders.
+                face_steps = min(12, max(6, spec.get("default_steps", 9)))
                 if is_dt:
-                    _dt_run(cout, dt_reg, face_prompt, gw, gh, min(20, spec.get("default_steps", 20)),
+                    _dt_run(cout, dt_reg, face_prompt, gw, gh, face_steps,
                             spec.get("recommended_cfg", 5.0) if spec.get("use_guidance") else 3.5,
                             seed, face_neg if spec.get("negative") else None, cin, 0.4, None)
                 else:
                     mdl = _ensure_model(name)
                     kw: dict[str, Any] = dict(seed=seed, prompt=face_prompt, width=gw, height=gh,
-                                              num_inference_steps=spec.get("default_steps", 9),
+                                              num_inference_steps=face_steps,
                                               image_path=cin, image_strength=0.4)
                     if spec.get("use_guidance"):
                         kw["guidance"] = 3.5
                     if spec.get("negative"):
                         kw["negative_prompt"] = face_neg
-                    _mflux_cancel.clear()
-                    mdl.generate_image(**kw).save(path=cout)
+                    mdl.generate_image(**kw).save(path=cout)   # don't clear cancel mid-loop
                 region = Image.open(cout).convert("RGB").resize((w, h))
         except Exception:
             continue                                 # a failed face never breaks the image
@@ -3851,17 +3853,18 @@ def _parakeet_words(path: str) -> list[dict]:
         return []
 
 
-def _words(path: str) -> tuple[str, list[dict]]:
-    """Word-level transcript, Parakeet-first (better fillers), whisper fallback."""
+def _words(path: str) -> tuple[str, list[dict], str]:
+    """Word-level transcript + which engine produced it ('parakeet' | 'whisper').
+    Parakeet-first (keeps fillers, faster); whisper fallback for unsupported langs."""
     pk = _parakeet_words(path)
     if pk:
-        return " ".join(w["word"] for w in pk), pk
+        return " ".join(w["word"] for w in pk), pk, "parakeet"
     import mlx_whisper
     r = _mlx(lambda: mlx_whisper.transcribe(path, path_or_hf_repo=WHISPER_REPO, word_timestamps=True))
     words = [{"word": w["word"].strip(), "start": round(float(w["start"]), 3),
               "end": round(float(w["end"]), 3)}
              for s in r["segments"] for w in s.get("words", [])]
-    return r["text"].strip(), words
+    return r["text"].strip(), words, "whisper"
 
 
 class AudioCloneRequest(BaseModel):
@@ -3988,25 +3991,40 @@ _CB_LANGS = {"ar": "Arabic", "da": "Danish", "de": "German", "el": "Greek",
 _CB_LOCK = threading.Lock()
 
 
+# venv.create() writes the venv python BEFORE pip runs, so its mere existence
+# can't mean "ready". We only trust an explicit sentinel written after pip
+# succeeds — otherwise a half-failed install (disk/network) would look installed
+# forever and be un-retryable.
+_CB_DONE = _CB_DIR / ".installed"
+
+
 def _cb_ready() -> bool:
-    return _CB_PY.is_file() and os.access(_CB_PY, os.X_OK)
+    return _CB_DONE.is_file() and _CB_PY.is_file() and os.access(_CB_PY, os.X_OK)
 
 
 def _cb_install() -> Optional[str]:
     """Create the isolated venv and install chatterbox-mlx. Returns None on
-    success, else an error string. Runs once (guarded)."""
+    success, else an error string. Runs once (guarded); safe to retry."""
     with _CB_LOCK:
         if _cb_ready():
             return None
         try:
+            _CB_DONE.unlink(missing_ok=True)     # any prior partial install is stale
             _CB_DIR.mkdir(parents=True, exist_ok=True)
             import venv as _venv
-            _venv.create(str(_CB_VENV), with_pip=True)
+            if not _CB_PY.is_file():
+                _venv.create(str(_CB_VENV), with_pip=True)
             pip = str(_CB_VENV / "bin" / "pip")
             r = subprocess.run([pip, "install", "--quiet", "chatterbox-mlx"],
                                capture_output=True, text=True, timeout=1800)
-            if r.returncode != 0 or not _cb_ready():
+            # Verify the package actually imports before declaring success.
+            if r.returncode != 0:
                 return f"pip install failed: {(r.stderr or r.stdout or '')[-300:]}"
+            chk = subprocess.run([str(_CB_PY), "-c", "import chatterbox"],
+                                 capture_output=True, text=True, timeout=120)
+            if chk.returncode != 0:
+                return f"chatterbox import failed: {(chk.stderr or '')[-200:]}"
+            _CB_DONE.write_text("ok")
             return None
         except Exception as exc:
             return f"setup failed: {exc}"
@@ -4059,11 +4077,21 @@ def chatterbox_tts(req: ChatterboxRequest) -> dict:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=_DT_GEN_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Chatterbox timed out.")
-    line = (r.stdout or "").strip().splitlines()[-1] if r.stdout.strip() else ""
-    try:
-        res = json.loads(line)
-    except Exception:
+    # Scan for OUR JSON line (last valid one wins) — torch/mps teardown can print
+    # warnings to stdout after it, so the last line isn't reliably the result.
+    res = None
+    for ln in reversed((r.stdout or "").splitlines()):
+        ln = ln.strip()
+        if ln.startswith("{") and ln.endswith("}"):
+            try:
+                res = json.loads(ln); break
+            except Exception:
+                continue
+    if res is None:
         res = {"ok": False, "error": (r.stderr or r.stdout or "no output")[-300:]}
+    # File written and non-trivial? Treat as success even if JSON got garbled.
+    if not res.get("ok") and out.is_file() and out.stat().st_size > 1000:
+        res = {"ok": True}
     if not res.get("ok") or not out.is_file():
         raise HTTPException(status_code=500, detail=f"Chatterbox failed: {res.get('error', 'unknown')}")
     return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}",
@@ -4167,7 +4195,7 @@ def audio_words(req: WordsRequest) -> dict:
     d = _project_dir(proj)
     fp = _safe_project_file(d, req.file)
     try:
-        text, words = _words(fp)
+        text, words, _ = _words(fp)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
     return {"text": text, "words": words}
@@ -4306,14 +4334,18 @@ def audio_defiller(req: WordsRequest) -> dict:
     if not ff:
         raise HTTPException(status_code=500, detail="ffmpeg not found.")
     try:
-        _, words = _words(fp)              # Parakeet keeps 'uh/um'; whisper drops them
+        _, words, src = _words(fp)         # Parakeet keeps 'uh/um'; whisper drops them
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
     norm = lambda w: "".join(c for c in w.lower().strip() if c.isalpha())
     cuts = [(float(w["start"]), float(w["end"]))
             for w in words if norm(w["word"]) in _FILLERS]
     if not cuts:
-        return {"removed": 0, "file": req.file, "project": proj,
+        # Be honest: whisper (the non-English/EU fallback) strips fillers from its
+        # transcript, so "0 removed" there means "couldn't detect", not "none".
+        note = ("no_fillers" if src == "parakeet"
+                else "unreliable")   # whisper fallback → detection is best-effort
+        return {"removed": 0, "detection": note, "file": req.file, "project": proj,
                 "url": f"/media/{proj}/{os.path.basename(req.file)}"}
     dur = _adur(fp)
     # Build the KEEP ranges = the gaps between cuts (with a tiny pad so we don't
