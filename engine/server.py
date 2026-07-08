@@ -3552,13 +3552,20 @@ def generate_video_cloud(req: CloudVideoRequest) -> dict:
     proj = _safe_project(req.project)
     d = _project_dir(proj)
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-    body: dict = {"prompt": req.prompt, "aspect_ratio": req.aspect, "duration": str(req.duration)}
-    if req.resolution:
+    # Kling O1 uses a different image schema (start_image_url/end_image_url) and
+    # rejects aspect_ratio; every other model uses image_url/tail_image_url.
+    is_kling_o1 = "kling-video/o1" in req.model
+    body: dict = {"prompt": req.prompt, "duration": str(req.duration)}
+    if not is_kling_o1:
+        body["aspect_ratio"] = req.aspect
+    if req.resolution and not is_kling_o1:
         body["resolution"] = req.resolution
     if req.image_path:
-        body["image_url"] = _data_uri(_safe_media_path(req.image_path))
+        uri = _data_uri(_safe_media_path(req.image_path))
+        body["start_image_url" if is_kling_o1 else "image_url"] = uri
     if req.tail_image_path:
-        body["tail_image_url"] = _data_uri(_safe_media_path(req.tail_image_path))
+        turi = _data_uri(_safe_media_path(req.tail_image_path))
+        body["end_image_url" if is_kling_o1 else "tail_image_url"] = turi
     base = f"https://queue.fal.run/{req.model.strip().strip('/')}"
     out_name = f"cloud_{uuid.uuid4().hex[:6]}.mp4"
     out = d / out_name
