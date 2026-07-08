@@ -4178,6 +4178,160 @@ def chatterbox_tts(req: ChatterboxRequest) -> dict:
             "duration": res.get("dur", round(_adur(out), 2)), "lang": req.lang}
 
 
+# === ACE-Step music generation (MIT, commercial local songs) ====================
+# Heaviest isolated tool: its own uv-managed venv (torch 2.7 etc.) that conflicts
+# with the main engine, PLUS ~15GB models. We run its bundled REST API server as a
+# background service and PROXY to it (localhost:8001) — never import it here.
+_ACE_DIR = ROOT / "tools-acestep"
+_ACE_REPO = _ACE_DIR / "ACE-Step-1.5"
+_ACE_VENV = _ACE_REPO / ".venv"
+_ACE_PY = _ACE_VENV / "bin" / "python"
+_ACE_DONE = _ACE_DIR / ".installed"
+_ACE_PORT = 8001
+_ACE_URL = f"http://127.0.0.1:{_ACE_PORT}"
+_ACE_LOCK = threading.Lock()
+_ace_proc: Optional[subprocess.Popen] = None
+
+
+def _ace_ready() -> bool:
+    return _ACE_DONE.is_file() and _ACE_PY.is_file()
+
+
+def _ace_service_up() -> bool:
+    try:
+        r = httpx.get(f"{_ACE_URL}/health", timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _ace_install() -> Optional[str]:
+    """Clone ACE-Step + uv sync its isolated venv (heavy). Models download later
+    on first generation. Returns None on success, else an error string."""
+    with _ACE_LOCK:
+        if _ace_ready():
+            return None
+        uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+        if not (uv and os.path.exists(uv)):
+            return "uv is not installed (needed to build ACE-Step's isolated env)."
+        try:
+            _ACE_DONE.unlink(missing_ok=True)
+            _ACE_DIR.mkdir(parents=True, exist_ok=True)
+            if not (_ACE_REPO / "pyproject.toml").is_file():
+                r = subprocess.run(["git", "clone", "--depth", "1",
+                                    "https://github.com/ace-step/ACE-Step-1.5.git", str(_ACE_REPO)],
+                                   capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    return f"clone failed: {(r.stderr or '')[-200:]}"
+            r = subprocess.run([uv, "sync"], cwd=str(_ACE_REPO),
+                               capture_output=True, text=True, timeout=1800)
+            if r.returncode != 0 or not _ACE_PY.is_file():
+                return f"uv sync failed: {(r.stderr or '')[-300:]}"
+            _ACE_DONE.write_text("ok")
+            return None
+        except Exception as exc:
+            return f"setup failed: {exc}"
+
+
+def _ace_ensure_service() -> Optional[str]:
+    """Start the ACE-Step REST service if it isn't already up; wait for /health."""
+    global _ace_proc
+    if _ace_service_up():
+        return None
+    with _ACE_LOCK:
+        if _ace_service_up():
+            return None
+        if not _ace_ready():
+            return "ACE-Step isn't installed."
+        env = dict(os.environ, ACESTEP_LM_BACKEND="mlx")
+        try:
+            _ace_proc = subprocess.Popen([str(_ACE_VENV / "bin" / "acestep-api")],
+                                         cwd=str(_ACE_REPO), env=env,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            return f"couldn't start ACE-Step service: {exc}"
+    for _ in range(60):                        # up to ~60s to bind
+        if _ace_service_up():
+            return None
+        time.sleep(1.0)
+    return "ACE-Step service didn't come up."
+
+
+@app.get("/api/audio/music")
+def music_status() -> dict:
+    return {"installed": _ace_ready(), "service_up": _ace_service_up(), "size_mb": 15000}
+
+
+@app.post("/api/audio/music/install")
+def music_install() -> dict:
+    err = _ace_install()
+    if err:
+        raise HTTPException(status_code=502, detail=f"Couldn't set up ACE-Step — {err}")
+    return {"installed": True}
+
+
+class MusicRequest(BaseModel):
+    project: Optional[str] = None
+    prompt: str                          # e.g. "upbeat corporate background music"
+    lyrics: str = "[Instrumental]"
+    duration: int = 30
+    steps: int = 8                       # turbo model: 1-20
+
+
+@app.post("/api/audio/music/generate")
+def music_generate(req: MusicRequest) -> dict:
+    """Local commercial music via the isolated ACE-Step service (proxy + poll)."""
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Empty prompt.")
+    if not _ace_ready():
+        raise HTTPException(status_code=409, detail="ACE-Step isn't installed yet.")
+    if (err := _ace_ensure_service()):
+        raise HTTPException(status_code=502, detail=err)
+    proj = _safe_project(req.project)
+    d = _project_dir(proj)
+    body = {"prompt": prompt, "lyrics": req.lyrics or "[Instrumental]",
+            "audio_duration": max(10, min(240, req.duration)),
+            "inference_steps": max(1, min(20, req.steps)), "batch_size": 1}
+    try:
+        with httpx.Client(timeout=httpx.Timeout(connect=5, read=60, write=60, pool=10)) as c:
+            sub = c.post(f"{_ACE_URL}/release_task", json=body)
+            if sub.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"ACE-Step rejected: {sub.text[:200]}")
+            tid = (sub.json().get("data") or {}).get("task_id")
+            if not tid:
+                raise HTTPException(status_code=502, detail=f"ACE-Step gave no task id: {str(sub.json())[:200]}")
+            for _ in range(600):               # up to ~20 min (first run downloads ~15GB)
+                time.sleep(2.0)
+                qr = c.post(f"{_ACE_URL}/query_result", json={"task_id_list": [tid]}).json()
+                item = (qr.get("data") or [{}])[0]
+                st = item.get("status")
+                if st == 1:
+                    res = json.loads(item["result"], strict=False)
+                    furl = res[0]["file"]
+                    metas = res[0].get("metas", {})
+                    break
+                if st == 2:
+                    raise HTTPException(status_code=502, detail="ACE-Step generation failed.")
+            else:
+                raise HTTPException(status_code=504, detail="ACE-Step timed out.")
+            out_name = f"music_{uuid.uuid4().hex[:6]}.mp3"
+            out = d / out_name
+            with c.stream("GET", f"{_ACE_URL}{furl}") as r:
+                r.raise_for_status()
+                with open(out, "wb") as f:
+                    for chunk in r.iter_bytes():
+                        f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ACE-Step call failed: {exc}")
+    if not out.is_file() or out.stat().st_size < 1000:
+        raise HTTPException(status_code=502, detail="Could not produce music.")
+    return {"file": out_name, "project": proj, "url": f"/media/{proj}/{out_name}",
+            "duration": round(_adur(out), 2), "bpm": metas.get("bpm")}
+
+
 # === Audio: Sound FX / ambience generation (AudioLDM, text->audio) ==============
 _audioldm = None
 _audioldm_lock = threading.Lock()
