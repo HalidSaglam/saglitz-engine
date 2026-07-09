@@ -219,5 +219,205 @@ def edit_image(project: str, file: str, instruction: str, model: str):
     return _result_image(r.json())
 
 
+# --- Helpers for media (audio/video) results (can't embed as Image) ------------
+def _media_result(data: dict, kind: str = "dosya") -> str:
+    proj = data.get("project", "Genel")
+    out_path = os.path.join(_projects_root(), proj, data["file"])
+    extra = []
+    for k in ("duration", "lang", "bpm", "frames", "removed"):
+        if data.get(k) is not None:
+            extra.append(f"{k}={data[k]}")
+    return f"✓ {kind} hazır [proje: {proj}] {' '.join(extra)}. Dosya: {out_path}"
+
+
+def _get(path: str):
+    with httpx.Client(timeout=TIMEOUT) as c:
+        return c.get(f"{ENGINE_URL}{path}")
+
+
+def _err(r) -> str:
+    try:
+        return f"Başarısız ({r.status_code}): {r.json().get('detail', r.text)}"
+    except Exception:
+        return f"Başarısız ({r.status_code}): {r.text}"
+
+
+# === Audio ======================================================================
+@mcp.tool()
+def text_to_speech(text: str, project: str | None = None,
+                   voice: str = "af_heart", engine: str = "kokoro") -> str:
+    """Metni yerel olarak seslendirir (Kokoro/Piper TTS) ve .wav döndürür.
+
+    Args:
+        text: Seslendirilecek metin.
+        project: Proje/klasör adı (verilmezse "Genel").
+        voice: Ses id'si (Kokoro: af_heart, am_adam… — voices için list_voices).
+        engine: "kokoro" (varsayılan, çok dilli) | "piper".
+    """
+    try:
+        r = _post("/api/audio/tts", {"text": text, "project": project,
+                                     "voice": voice, "engine": engine})
+    except Exception as exc:
+        return _hint(exc)
+    return _media_result(r.json(), "Seslendirme") if r.status_code == 200 else _err(r)
+
+
+@mcp.tool()
+def speak_multilingual(text: str, lang: str = "tr", project: str | None = None,
+                       ref_file: str | None = None) -> str:
+    """Ticari-güvenli yerel çok-dilli ses (ACE-Step değil, Chatterbox) — Türkçe,
+    Almanca + 21 dil, isteğe bağlı ses klonlama. Motorun app'ten bir kez kurulması
+    gerekir (~2.6 GB).
+
+    Args:
+        text: Seslendirilecek metin (seçilen dilde).
+        lang: Dil kodu — tr, de, en, es, fr, it, pt, nl, pl, ru, ar, ja, ko, zh, hi…
+        project: Proje/klasör adı.
+        ref_file: (İsteğe bağlı) projedeki 5–10 sn'lik bir ses dosyası — o sesi klonlar.
+    """
+    try:
+        if not _get("/api/audio/chatterbox").json().get("installed"):
+            return ("Chatterbox kurulu değil. Saglitz app → Ses stüdyosu → 'Türkçe/DE ✨' "
+                    "→ Set up (~2.6 GB) ile bir kez kur, sonra tekrar dene.")
+        r = _post("/api/audio/chatterbox/tts",
+                  {"text": text, "lang": lang, "project": project, "ref_file": ref_file})
+    except Exception as exc:
+        return _hint(exc)
+    return _media_result(r.json(), f"{lang} sesi") if r.status_code == 200 else _err(r)
+
+
+@mcp.tool()
+def generate_music(prompt: str, duration: int = 30, project: str | None = None,
+                   lyrics: str = "[Instrumental]") -> str:
+    """Yerel, ticari-güvenli müzik üretir (ACE-Step). Motorun app'ten bir kez
+    kurulması gerekir (~15 GB).
+
+    Args:
+        prompt: Müzik tarifi (ör. "upbeat corporate", "lofi hip hop study beats").
+        duration: Süre (saniye, 10–240). Varsayılan 30.
+        project: Proje/klasör adı.
+        lyrics: Şarkı sözü; enstrümantal için "[Instrumental]" (varsayılan).
+    """
+    try:
+        if not _get("/api/audio/music").json().get("installed"):
+            return ("ACE-Step kurulu değil. Saglitz app → Ses stüdyosu → 'Music 🎵' "
+                    "→ Set up (~15 GB) ile bir kez kur, sonra tekrar dene.")
+        with httpx.Client(timeout=httpx.Timeout(connect=5, read=1800, write=30, pool=5)) as c:
+            r = c.post(f"{ENGINE_URL}/api/audio/music/generate",
+                       json={"prompt": prompt, "duration": duration,
+                             "project": project, "lyrics": lyrics})
+    except Exception as exc:
+        return _hint(exc)
+    return _media_result(r.json(), "Müzik") if r.status_code == 200 else _err(r)
+
+
+@mcp.tool()
+def transcribe_audio(project: str, file: str) -> str:
+    """Bir ses dosyasını metne çevirir (yerel Whisper/Parakeet).
+
+    Args:
+        project: Proje/klasör adı.
+        file: Ses dosya adı (projects/<project>/ altındaki).
+    """
+    try:
+        r = _post("/api/audio/transcribe", {"project": project, "ref_file": file})
+    except Exception as exc:
+        return _hint(exc)
+    return r.json().get("text", "") if r.status_code == 200 else _err(r)
+
+
+@mcp.tool()
+def enhance_audio(project: str, file: str) -> str:
+    """Bir ses klibini temizler (gürültü azaltma + de-ess + seviye normalizasyonu).
+
+    Args:
+        project: Proje/klasör adı.
+        file: Ses dosya adı.
+    """
+    try:
+        r = _post("/api/audio/enhance", {"project": project, "file": file})
+    except Exception as exc:
+        return _hint(exc)
+    return _media_result(r.json(), "Temizlenmiş ses") if r.status_code == 200 else _err(r)
+
+
+# === Video ======================================================================
+@mcp.tool()
+def generate_video(prompt: str, project: str | None = None,
+                   frames: int = 49, image_file: str | None = None) -> str:
+    """Yerel olarak kısa bir video üretir (Wan/LTX). İndirilmiş bir video modeli
+    gerekir; en kaliteli indirilmiş model otomatik seçilir. GPU-ağır: dakikalar sürer.
+
+    Args:
+        prompt: Klip tarifi (ör. "a red lighthouse at sunset, waves, cinematic").
+        project: Proje/klasör adı.
+        frames: Kare sayısı (9–121; ~16 fps, yani 49 kare ≈ 3 sn). Varsayılan 49.
+        image_file: (İsteğe bağlı) projedeki bir görsel — image-to-video başlangıç karesi.
+    """
+    try:
+        vids = [m for m in _get("/api/dt/models").json()
+                if m.get("downloaded") and any(k in m["ckpt"].lower()
+                                               for k in ("wan", "ltx", "ti2v"))]
+        if not vids:
+            return "İndirilmiş video modeli yok. Saglitz app → Models'tan bir Wan/LTX modeli indir."
+        vids.sort(key=lambda m: (("5b" in m["ckpt"] or "ltx" in m["ckpt"]), not ("1.3b" in m["ckpt"])), reverse=True)
+        model = vids[0]["ckpt"]
+        payload = {"model": model, "prompt": prompt, "project": project,
+                   "frames": frames, "smooth": True}
+        if image_file:
+            payload["image_path"] = os.path.join(_projects_root(), project or "Genel", image_file)
+        with httpx.Client(timeout=httpx.Timeout(connect=5, read=1800, write=30, pool=5)) as c:
+            r = _post_retry_busy(c, f"{ENGINE_URL}/api/generate/video", payload)
+    except Exception as exc:
+        return _hint(exc)
+    return _media_result(r.json(), "Video") if r.status_code == 200 else _err(r)
+
+
+@mcp.tool()
+def talking_head(project: str, image_file: str, audio_file: str) -> str:
+    """Bir portre + bir konuşma klibinden dudak-senkronlu konuşan video üretir
+    (fal.ai bulut — app'te bir fal.ai anahtarı gerekir).
+
+    Args:
+        project: Proje/klasör adı (görsel ve ses bu projede olmalı).
+        image_file: Portre görsel dosya adı.
+        audio_file: Konuşma sesi dosya adı (ör. text_to_speech / speak_multilingual çıktısı).
+    """
+    try:
+        r = _post("/api/video/talkinghead",
+                  {"project": project, "image_file": image_file, "audio_file": audio_file})
+    except Exception as exc:
+        return _hint(exc)
+    return _media_result(r.json(), "Konuşan video") if r.status_code == 200 else _err(r)
+
+
+# === Image (extra) ==============================================================
+@mcp.tool()
+def remove_background(project: str, file: str):
+    """Bir görselin arka planını kaldırır (rembg/BiRefNet) ve şeffaf PNG döndürür.
+
+    Args:
+        project: Proje/klasör adı.
+        file: Görsel dosya adı.
+    """
+    try:
+        r = _post("/api/image/removebg", {"project": project, "file": file})
+    except Exception as exc:
+        return _hint(exc)
+    return _result_image(r.json()) if r.status_code == 200 else _err(r)
+
+
+# === Projects ===================================================================
+@mcp.tool()
+def list_projects() -> str:
+    """Mevcut projeleri (klasörleri) listeler."""
+    try:
+        cfg = _get("/api/config").json()
+    except Exception as exc:
+        return _hint(exc)
+    projs = cfg.get("projects", [])
+    return "Projeler: " + (", ".join(projs) if projs else "(yok)")
+
+
 if __name__ == "__main__":
     mcp.run()
