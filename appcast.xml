@@ -3,18 +3,18 @@
   <channel>
     <title>Saglitz Studio</title>
     <item>
-      <title>1.20</title>
-      <sparkle:version>21</sparkle:version>
-      <sparkle:shortVersionString>1.20</sparkle:shortVersionString>
+      <title>1.21</title>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>1.21</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description><![CDATA[<ul>
-  <li><b>Make music 🎵</b> — generate original, commercial-safe background music on your Mac from a text prompt (upbeat corporate, lofi study beats, cinematic…). Audio studio → the new “Music” mode. Runs fully on-device.</li>
-  <li><b>First → last frame video</b> — Kling O1: give a start image and an end image and get a smooth animated transition between them (cloud, uses your fal.ai key).</li>
-  <li><b>Newer cloud video models</b> — Veo 3.1 and Seedance 1.5 Pro added for higher-quality clips.</li>
-  <li><b>A real Mac menu bar</b> — every command now lives in the menu bar (File → Generate/Export, Edit → Copy/Delete, View → Fit/History/Palette, Help → Keyboard Shortcuts), searchable from Help and remappable in System Settings.</li>
-  <li><b>Fixes &amp; polish</b> — the window now tiles to half your screen; the Generate button no longer resizes mid-run; the Turkish/German voice can’t get stuck half-installed; filler-word removal is honest about non-English clips; clearer labels and small readability fixes throughout.</li>
+  <li><b>Product Studio — new 📦</b> — upload a product, cut the background, generate a fresh lifestyle scene behind it, and export every social size. All local, all free. Includes goal templates (E-commerce / Social ad / Luxury / Natural), 20 scenes, one-click variations, a brand-logo ad kit, and batch campaigns (a whole product folder in one click).</li>
+  <li><b>Many more models</b> — the Models panel now shows the full downloadable Draw Things catalog (hundreds of official + community models, no API key needed). Non-commercial models are clearly flagged.</li>
+  <li><b>Refreshed interface</b> — a modern, responsive left rail and cards with hover effects and logical grouping.</li>
+  <li><b>Claude integration (MCP)</b> — new <code>expand_image</code> (outpaint / extend the canvas) and <code>vary_image</code> (img2img variation) tools.</li>
+  <li><b>Fixes</b> — the Models panel now refreshes itself when the engine connects; Home “Recent creations” shows work added outside the app (including Claude/MCP generations).</li>
 </ul>]]></description>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-21.dmg" sparkle:edSignature="RNe/a+jNmXgwbwUvVoEaiI0sO4zOGaIVbLeoox0I6lY56ZE3z7ZGHqw61hHimG06W6H6uYTI5r2b4IwqrZBmDA==" length="11114133" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-22.dmg" sparkle:edSignature="34NWoNw3NtYwhovU4lXxvGRygkWUAcTDOeP+LyhCRdw4Qpk8eyLng36zCPK8ll6W7ACkwfKJ0Mxt2weO8WBeBQ==" length="11286936" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
