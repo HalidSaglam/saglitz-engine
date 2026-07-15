@@ -3,15 +3,16 @@
   <channel>
     <title>Saglitz Studio</title>
     <item>
-      <title>1.22</title>
-      <sparkle:version>23</sparkle:version>
-      <sparkle:shortVersionString>1.22</sparkle:shortVersionString>
+      <title>1.23</title>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>1.23</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description><![CDATA[<ul>
-  <li><b>Expanded Claude integration (MCP)</b> — Claude can now run the whole product-to-ad-kit workflow through the app's local engine: cut a product out, generate a lifestyle scene behind it (<code>product_scene</code>), and export every social size centered on the subject (<code>ad_kit</code>). Plus <code>expand_image</code> (outpaint / extend the canvas) and <code>vary_image</code> (img2img variation).</li>
-  <li><b>Stability &amp; engine updates</b> — under-the-hood improvements and the latest local engine.</li>
+  <li><b>Ad text on your product shots</b> — Product Studio can now stamp a headline and subtext (e.g. "Summer Sale" / "Now 30% off") onto every social size, in a clean legible band at the bottom or top. Turn a product scene into a finished ad in one click.</li>
+  <li><b>Product Studio, polished</b> — the whole workspace is now in English, consistent with the rest of the app.</li>
+  <li><b>Command palette (⌘K)</b> — jump to Product Studio and every workspace from the palette; it now lists all actions, scrollable.</li>
 </ul>]]></description>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-23.dmg" sparkle:edSignature="/taH5+9F3fzcvNVDjQQuVfWFlJHaj+iiTZw8Xgaqb8KopQcxMCvL21VcB6u8P8khHu8wL2f9boOr7d4TMT9RBQ==" length="11286748" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-24.dmg" sparkle:edSignature="BosVC0Z8UOqrEnQXx/VDzrIAygUQwLGSq1KN0T5H5N6AcR/uJDo0d4vpdCvPV97edZxHrR7nuiUQBLL4KQVRAA==" length="11323653" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
