@@ -3,18 +3,15 @@
   <channel>
     <title>Saglitz Studio</title>
     <item>
-      <title>1.21</title>
-      <sparkle:version>22</sparkle:version>
-      <sparkle:shortVersionString>1.21</sparkle:shortVersionString>
+      <title>1.22</title>
+      <sparkle:version>23</sparkle:version>
+      <sparkle:shortVersionString>1.22</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description><![CDATA[<ul>
-  <li><b>Product Studio — new 📦</b> — upload a product, cut the background, generate a fresh lifestyle scene behind it, and export every social size. All local, all free. Includes goal templates (E-commerce / Social ad / Luxury / Natural), 20 scenes, one-click variations, a brand-logo ad kit, and batch campaigns (a whole product folder in one click).</li>
-  <li><b>Many more models</b> — the Models panel now shows the full downloadable Draw Things catalog (hundreds of official + community models, no API key needed). Non-commercial models are clearly flagged.</li>
-  <li><b>Refreshed interface</b> — a modern, responsive left rail and cards with hover effects and logical grouping.</li>
-  <li><b>Claude integration (MCP)</b> — new <code>expand_image</code> (outpaint / extend the canvas) and <code>vary_image</code> (img2img variation) tools.</li>
-  <li><b>Fixes</b> — the Models panel now refreshes itself when the engine connects; Home “Recent creations” shows work added outside the app (including Claude/MCP generations).</li>
+  <li><b>Expanded Claude integration (MCP)</b> — Claude can now run the whole product-to-ad-kit workflow through the app's local engine: cut a product out, generate a lifestyle scene behind it (<code>product_scene</code>), and export every social size centered on the subject (<code>ad_kit</code>). Plus <code>expand_image</code> (outpaint / extend the canvas) and <code>vary_image</code> (img2img variation).</li>
+  <li><b>Stability &amp; engine updates</b> — under-the-hood improvements and the latest local engine.</li>
 </ul>]]></description>
-      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-22.dmg" sparkle:edSignature="34NWoNw3NtYwhovU4lXxvGRygkWUAcTDOeP+LyhCRdw4Qpk8eyLng36zCPK8ll6W7ACkwfKJ0Mxt2weO8WBeBQ==" length="11286936" type="application/x-apple-diskimage"/>
+      <enclosure url="https://github.com/HalidSaglam/saglitz-engine/releases/download/app-updates/Saglitz-Studio-23.dmg" sparkle:edSignature="/taH5+9F3fzcvNVDjQQuVfWFlJHaj+iiTZw8Xgaqb8KopQcxMCvL21VcB6u8P8khHu8wL2f9boOr7d4TMT9RBQ==" length="11286748" type="application/x-apple-diskimage"/>
     </item>
   </channel>
 </rss>
