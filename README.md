@@ -12,13 +12,15 @@ A self-contained, local-first inference server for image, persona, video, and au
 ![Server](https://img.shields.io/badge/server-FastAPI%20%2B%20MLX-009688.svg)
 ![Bundle](https://img.shields.io/badge/distribution-self--contained-success.svg)
 
+### [Get Saglitz Studio — the app this powers →](https://saglitz.com/apps/saglitz-studio)
+
 </div>
 
 ---
 
 ## What this is
 
-Saglitz Engine is the local HTTP service that does the actual generative work for **Saglitz Studio**, a native macOS app for photographers, marketers, and creators. The engine is fully open source under the GPL-3.0. The app that drives it is a separate, proprietary product.
+Saglitz Engine is the local HTTP service that does the actual generative work for **[Saglitz Studio](https://saglitz.com/apps/saglitz-studio)**, a native macOS app for photographers, marketers, and creators. The engine is fully open source under the GPL-3.0. The app that drives it is a separate, proprietary product.
 
 This repository is both:
 
@@ -32,7 +34,7 @@ Everything runs on `127.0.0.1`. No telemetry, no account, no data leaves your ma
 | Layer | License | Where |
 |-------|---------|-------|
 | **Engine** (this repo) | **GPL-3.0** | Open source, public |
-| **Saglitz Studio** (the macOS app) | Proprietary | Sold separately |
+| **[Saglitz Studio](https://saglitz.com/apps/saglitz-studio)** (the macOS app) | Proprietary | [Sold separately](https://saglitz.com/apps/saglitz-studio) |
 
 The engine *must* be open: it loads GPL-licensed text-to-speech (`piper`, `phonemizer` via Kokoro) in-process and bundles GPL command-line tools (`draw-things-cli`, `ffmpeg`, `espeak-ng`). The macOS app talks to the engine **over local HTTP as a separate process**. That is aggregation, not linking, so the app is not a derivative work and remains proprietary. There is **no AGPL** anywhere in the stack.
 
@@ -134,10 +136,18 @@ Complete license texts ship inside every release bundle. If you redistribute a b
 
 ## Screenshots
 
-Screenshots of Saglitz Studio, the app this engine powers, are coming soon.
+**[Saglitz Studio](https://saglitz.com/apps/saglitz-studio)** — the macOS app this engine powers:
+
+![Saglitz Studio](https://saglitz.com/apps/saglitz-studio/screenshot-1.png)
+
+![Saglitz Studio](https://saglitz.com/apps/saglitz-studio/screenshot-2.png)
+
+![Saglitz Studio](https://saglitz.com/apps/saglitz-studio/screenshot-5.png)
+
+See more — and download the app — at **[saglitz.com/apps/saglitz-studio →](https://saglitz.com/apps/saglitz-studio)**.
 
 ---
 
 <div align="center">
-<sub>Saglitz Engine is free software under the GPL-3.0. The Saglitz Studio app is a separate proprietary product.</sub>
+<sub>Saglitz Engine is free software under the GPL-3.0. The <a href="https://saglitz.com/apps/saglitz-studio">Saglitz Studio</a> app is a separate proprietary product.</sub>
 </div>
